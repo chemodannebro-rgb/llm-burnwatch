@@ -1,5 +1,7 @@
 # llmledger
 
+[![CI](https://github.com/chemodannebro-rgb/llmledger/actions/workflows/ci.yml/badge.svg)](https://github.com/chemodannebro-rgb/llmledger/actions/workflows/ci.yml)
+
 > Portfolio / demo engineering project. Not a commercial product — no
 > support, no SLA, use at your own risk.
 
