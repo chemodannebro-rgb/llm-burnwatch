@@ -20,7 +20,15 @@ jobs:
           llmledger schema
           llmledger demo-data --out /tmp/demo.jsonl
           llmledger report --log-file /tmp/demo.jsonl
-          llmledger detect --log-file /tmp/demo.jsonl
+          # demo-data always injects synthetic anomalies, so `detect` finding
+          # them (exit 1) is the *expected*, correct outcome here -- this
+          # smoke test only cares that the command runs without crashing
+          # (exit 2) now that scikit-learn isn't installed.
+          llmledger detect --log-file /tmp/demo.jsonl; code=$?
+          if [ "$code" -eq 2 ]; then
+            echo "detect crashed (exit 2) on a core-only install" >&2
+            exit 1
+          fi
 
   full:
     name: Full install + tests (Python ${{ matrix.python-version }})
@@ -39,7 +47,27 @@ jobs:
         run: pip install -e ".[anomaly,dev]"
       - name: Run tests
         run: pytest tests/ -v
+      - name: Extract llmledger's own declared dependencies for audit
+        # Scoped to what pyproject.toml actually declares (core `dependencies`
+        # + the `anomaly` extra, i.e. scikit-learn) rather than auditing every
+        # package in this CI environment: pytest, pip itself, and pip-audit's
+        # own transitive deps (requests, urllib3, filelock, msgpack, ...) are
+        # dev/test/tooling, not something llmledger ships to users, and their
+        # CVEs churn independently of this project.
+        run: |
+          pip install tomli
+          python -c "
+          import tomli
+          with open('pyproject.toml', 'rb') as f:
+              data = tomli.load(f)
+          proj = data['project']
+          deps = list(proj.get('dependencies', []))
+          deps += list(proj.get('optional-dependencies', {}).get('anomaly', []))
+          with open('audit-requirements.txt', 'w') as out:
+              out.write('\n'.join(deps))
+          "
+          cat audit-requirements.txt
       - name: Run pip-audit
         run: |
           pip install pip-audit
-          pip-audit
+          pip-audit -r audit-requirements.txt
