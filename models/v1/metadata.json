@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "package_version": "0.2.0",
-  "created_at": "2026-07-03T18:03:14+00:00",
-  "n_examples": 210,
-  "model_sha256": "c2f890b5c0c5ab65c0049682daf3cd3c35f5afc859413b79db9bb8ec66de310c",
+  "package_version": "0.4.1",
+  "created_at": "2026-07-05T07:43:43+00:00",
+  "n_examples": 420,
+  "model_sha256": "98b77cf7e5ea332dc5c5a38a53a6d8d3b8aa6b571497b936faf0515900f90869",
   "reference_stats": {
     "by_group": [
       {
@@ -13,19 +13,24 @@
         ],
         "features": {
           "input_tokens": {
-            "median": 807,
-            "mad": 122,
-            "n": 39
+            "median": 807.0,
+            "mad": 122.0,
+            "n": 78
           },
           "output_tokens": {
-            "median": 153,
-            "mad": 33,
-            "n": 39
+            "median": 153.0,
+            "mad": 33.0,
+            "n": 78
           },
           "cost_micros": {
-            "median": 208,
-            "mad": 20,
-            "n": 39
+            "median": 208.0,
+            "mad": 20.0,
+            "n": 78
+          },
+          "cached_input_tokens": {
+            "median": 0.0,
+            "mad": 0.0,
+            "n": 78
           }
         }
       },
@@ -36,19 +41,24 @@
         ],
         "features": {
           "input_tokens": {
-            "median": 858,
-            "mad": 103,
-            "n": 49
+            "median": 858.0,
+            "mad": 103.0,
+            "n": 98
           },
           "output_tokens": {
-            "median": 136,
-            "mad": 17,
-            "n": 49
+            "median": 136.0,
+            "mad": 17.0,
+            "n": 98
           },
           "cost_micros": {
-            "median": 1239,
-            "mad": 135,
-            "n": 49
+            "median": 1239.0,
+            "mad": 135.0,
+            "n": 98
+          },
+          "cached_input_tokens": {
+            "median": 0.0,
+            "mad": 0.0,
+            "n": 98
           }
         }
       },
@@ -59,19 +69,24 @@
         ],
         "features": {
           "input_tokens": {
-            "median": 818,
-            "mad": 96,
-            "n": 37
+            "median": 818.0,
+            "mad": 96.0,
+            "n": 74
           },
           "output_tokens": {
-            "median": 155,
-            "mad": 22,
-            "n": 37
+            "median": 155.0,
+            "mad": 22.0,
+            "n": 74
           },
           "cost_micros": {
-            "median": 3640,
-            "mad": 362,
-            "n": 37
+            "median": 3640.0,
+            "mad": 362.0,
+            "n": 74
+          },
+          "cached_input_tokens": {
+            "median": 0.0,
+            "mad": 0.0,
+            "n": 74
           }
         }
       },
@@ -84,17 +99,22 @@
           "input_tokens": {
             "median": 752.0,
             "mad": 133.5,
-            "n": 44
+            "n": 88
           },
           "output_tokens": {
             "median": 163.0,
             "mad": 38.0,
-            "n": 44
+            "n": 88
           },
           "cost_micros": {
             "median": 4645.5,
             "mad": 643.5,
-            "n": 44
+            "n": 88
+          },
+          "cached_input_tokens": {
+            "median": 0.0,
+            "mad": 0.0,
+            "n": 88
           }
         }
       },
@@ -105,19 +125,24 @@
         ],
         "features": {
           "input_tokens": {
-            "median": 827,
-            "mad": 71,
-            "n": 41
+            "median": 827.0,
+            "mad": 71.0,
+            "n": 82
           },
           "output_tokens": {
-            "median": 149,
-            "mad": 34,
-            "n": 41
+            "median": 149.0,
+            "mad": 34.0,
+            "n": 82
           },
           "cost_micros": {
-            "median": 211,
-            "mad": 27,
-            "n": 41
+            "median": 211.0,
+            "mad": 27.0,
+            "n": 82
+          },
+          "cached_input_tokens": {
+            "median": 0.0,
+            "mad": 0.0,
+            "n": 82
           }
         }
       }
@@ -132,17 +157,22 @@
           "input_tokens": {
             "median": 809.0,
             "mad": 87.0,
-            "n": 80
+            "n": 160
           },
           "output_tokens": {
             "median": 150.5,
             "mad": 33.0,
-            "n": 80
+            "n": 160
           },
           "cost_micros": {
             "median": 208.5,
             "mad": 21.0,
-            "n": 80
+            "n": 160
+          },
+          "cached_input_tokens": {
+            "median": 0.0,
+            "mad": 0.0,
+            "n": 160
           }
         }
       },
@@ -153,19 +183,24 @@
         ],
         "features": {
           "input_tokens": {
-            "median": 858,
-            "mad": 103,
-            "n": 49
+            "median": 858.0,
+            "mad": 103.0,
+            "n": 98
           },
           "output_tokens": {
-            "median": 136,
-            "mad": 17,
-            "n": 49
+            "median": 136.0,
+            "mad": 17.0,
+            "n": 98
           },
           "cost_micros": {
-            "median": 1239,
-            "mad": 135,
-            "n": 49
+            "median": 1239.0,
+            "mad": 135.0,
+            "n": 98
+          },
+          "cached_input_tokens": {
+            "median": 0.0,
+            "mad": 0.0,
+            "n": 98
           }
         }
       },
@@ -176,19 +211,24 @@
         ],
         "features": {
           "input_tokens": {
-            "median": 818,
-            "mad": 96,
-            "n": 37
+            "median": 818.0,
+            "mad": 96.0,
+            "n": 74
           },
           "output_tokens": {
-            "median": 155,
-            "mad": 22,
-            "n": 37
+            "median": 155.0,
+            "mad": 22.0,
+            "n": 74
           },
           "cost_micros": {
-            "median": 3640,
-            "mad": 362,
-            "n": 37
+            "median": 3640.0,
+            "mad": 362.0,
+            "n": 74
+          },
+          "cached_input_tokens": {
+            "median": 0.0,
+            "mad": 0.0,
+            "n": 74
           }
         }
       },
@@ -201,20 +241,32 @@
           "input_tokens": {
             "median": 752.0,
             "mad": 133.5,
-            "n": 44
+            "n": 88
           },
           "output_tokens": {
             "median": 163.0,
             "mad": 38.0,
-            "n": 44
+            "n": 88
           },
           "cost_micros": {
             "median": 4645.5,
             "mad": 643.5,
-            "n": 44
+            "n": 88
+          },
+          "cached_input_tokens": {
+            "median": 0.0,
+            "mad": 0.0,
+            "n": 88
           }
         }
       }
     ]
+  },
+  "eval_metrics": {
+    "holdout_used": true,
+    "n_train_examples": 336,
+    "n_holdout_examples": 84,
+    "flagged_count": 12,
+    "flagged_fraction": 0.14285714285714285
   }
 }

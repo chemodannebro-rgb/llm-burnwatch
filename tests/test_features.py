@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+from llmledger.anomaly.baseline import FEATURES
 from llmledger.anomaly.constants import DRIFT_MULTIPLIER, EXTREME_Z_SENTINEL, MIN_GROUP_SAMPLES
 from llmledger.anomaly.features import (
     check_label_cardinality,
@@ -33,7 +34,7 @@ def test_insufficient_data_records_are_excluded_from_feature_matrix():
 
     assert len(X) == len(sufficient)
     assert kept_indices == list(range(len(sufficient)))
-    assert all(len(row) == 3 for row in X)
+    assert all(len(row) == len(FEATURES) for row in X)
 
 
 def test_feature_matrix_has_one_row_per_kept_record():

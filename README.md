@@ -83,7 +83,7 @@ pip install -e ".[anomaly]"            # + train (IsolationForest, requires scik
 
 | Command | What it does | Exit code |
 |---|---|---|
-| `llmledger report --log-file <path> [--rub-rate <rate>] [--since <date>] [--until <date>]` | Cost summary (total, by label, by model); `--rub-rate` also shows the total converted to RUB at that fixed, manually-supplied rate | `0` |
+| `llmledger report --log-file <path> [--rub-rate <rate>] [--since <date>] [--until <date>] [--trace-id <id>] [--json]` | Cost summary (total, by label, by model); `--rub-rate` also shows the total converted to RUB at that fixed, manually-supplied rate; `--trace-id` narrows to one request's calls; `--json` prints a machine-readable summary instead | `0` |
 | `llmledger demo-data --out <path>` | Write a synthetic log with known injected anomalies | `0` |
 | `llmledger detect --log-file <path> [--model-dir <dir>] [--json]` | Baseline (+ ML if a trained model exists) anomaly detection | `0` clean, `1` anomalies found, `2` error |
 | `llmledger train --log-file <path> --model-dir <dir>` | Train an IsolationForest model (`[anomaly]` extra) | `0` / `2` error |
@@ -122,10 +122,11 @@ Two independent, complementary layers:
 
 - **Baseline** (always available, no dependencies): a robust modified
   z-score (Iglewicz & Hoaglin) on `input_tokens`/`output_tokens`/
-  `cost_micros`, compared against the history of the same `(label, model)`
-  pair — median/MAD rather than mean/stdev, so pre-existing outliers in the
-  history don't mask new ones. Degrades gracefully (group → model → "not
-  enough data yet") instead of guessing on too little history.
+  `cost_micros`/`cached_input_tokens`, compared against the history of the
+  same `(label, model)` pair — median/MAD rather than mean/stdev, so
+  pre-existing outliers in the history don't mask new ones. Degrades
+  gracefully (group → model → "not enough data yet") instead of guessing on
+  too little history.
 - **ML cross-check** (optional, `[anomaly]` extra): an `IsolationForest`
   trained on the same group-relative features, used as a second opinion
   when a model exists. `detect` also compares current per-group statistics

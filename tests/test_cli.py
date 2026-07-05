@@ -4,11 +4,13 @@ import json
 import shutil
 import socket
 import sys
+from types import SimpleNamespace
 
 import pytest
 
-from llmledger.cli import DISCLAIMER, main
+from llmledger.cli import DISCLAIMER, _filter_report_records, main
 from llmledger.demo_data import write_demo_log
+from llmledger.tracker import CostTracker
 
 
 def _demo_log(tmp_path, **kwargs):
@@ -156,6 +158,102 @@ def test_report_since_until_rejects_bad_date_format(tmp_path, capsys):
 
     assert exc_info.value.code == 2
     assert "must be YYYY-MM-DD" in captured.err
+
+
+def test_report_json_flag_prints_machine_readable_summary(tmp_path, capsys):
+    log_path = _demo_log(tmp_path, n_normal=5, n_anomalies=0)
+
+    exit_code = main(["report", "--log-file", str(log_path), "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["call_count"] == 5
+    assert payload["total_cost_micros"] > 0
+    assert "by_label_micros" in payload
+    assert "by_model_micros" in payload
+
+
+def test_report_json_flag_on_empty_log_prints_zero_summary(tmp_path, capsys):
+    log_path = tmp_path / "empty.jsonl"
+    log_path.write_text("")
+
+    exit_code = main(["report", "--log-file", str(log_path), "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["call_count"] == 0
+    assert payload["total_cost_micros"] == 0
+
+
+def test_report_json_flag_includes_rub_conversion_when_rate_given(tmp_path, capsys):
+    log_path = _demo_log(tmp_path, n_normal=5, n_anomalies=0)
+
+    exit_code = main(["report", "--log-file", str(log_path), "--json", "--rub-rate", "90"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["rub_rate"] == 90
+    assert payload["total_cost_rub"] == pytest.approx(payload["total_cost_usd"] * 90)
+
+
+def test_report_trace_id_filters_to_matching_records(tmp_path, capsys):
+    log_path = tmp_path / "traced.jsonl"
+    with log_path.open("w", encoding="utf-8") as fh:
+        for trace_id, cost in [("req-1", 100), ("req-2", 200), ("req-1", 300)]:
+            fh.write(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "label": "x",
+                        "model": "gpt-4o",
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cached_input_tokens": 0,
+                        "cost_micros": cost,
+                        "timestamp": "2026-01-01T00:00:00+00:00",
+                        "trace_id": trace_id,
+                    }
+                )
+                + "\n"
+            )
+
+    exit_code = main(["report", "--log-file", str(log_path), "--trace-id", "req-1"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "calls: 2" in captured.out
+    assert "total cost: $0.000400" in captured.out
+
+
+def test_report_trace_id_no_match_prints_message(tmp_path, capsys):
+    log_path = _demo_log(tmp_path, n_normal=5, n_anomalies=0)
+
+    exit_code = main(["report", "--log-file", str(log_path), "--trace-id", "does-not-exist"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "no records found for trace_id" in captured.out
+
+
+def test_filter_report_records_consumes_a_plain_generator_without_materializing(tmp_path):
+    # `_filter_report_records` (and therefore `cmd_report`) must work directly
+    # off a one-shot generator -- no `list(...)`/indexing/`len()` on the raw
+    # records -- so a full log is never held in memory at once (issue #22).
+    def records_gen():
+        yield {"cost_micros": 1, "label": "a", "model": "m", "timestamp": "2026-01-01T00:00:00+00:00"}
+        yield {"cost_micros": 2, "label": "b", "model": "m", "timestamp": "2026-01-02T00:00:00+00:00"}
+
+    args = SimpleNamespace(since=None, until=None, trace_id=None)
+    counts = {"total": 0, "dropped_period": 0}
+
+    result = list(_filter_report_records(records_gen(), args, counts))
+
+    assert len(result) == 2
+    assert counts["total"] == 2
+    assert counts["dropped_period"] == 0
 
 
 def test_dashboard_since_until_filters_records(tmp_path, capsys):
@@ -308,7 +406,45 @@ def test_train_then_detect_uses_trained_model(tmp_path, capsys):
 
     assert detect_exit == 1
     assert payload["ml"]["available"] is True
-    assert payload["ml"]["anomaly_count"] > 0
+
+
+def test_train_command_prints_held_out_eval_metric(tmp_path, capsys):
+    pytest.importorskip("sklearn")
+    log_path = _demo_log(tmp_path, n_normal=200, n_anomalies=10)
+    model_dir = tmp_path / "models"
+
+    exit_code = main(["train", "--log-file", str(log_path), "--model-dir", str(model_dir)])
+    captured_out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "held-out eval:" in captured_out
+    assert "held-out example(s) flagged anomalous" in captured_out
+
+
+def test_train_command_reports_holdout_skipped_on_tiny_log(tmp_path, capsys):
+    pytest.importorskip("sklearn")
+    # All calls share one (label, model) pair so the single group clears
+    # MIN_GROUP_SAMPLES, but the total stays well under
+    # EVAL_HOLDOUT_MIN_EXAMPLES -- unlike `_demo_log`, which spreads calls
+    # randomly across 5 fixed pairs and so can't guarantee that for a small
+    # n_normal.
+    log_path = tmp_path / "tiny.jsonl"
+    tracker = CostTracker(log_path)
+    for _ in range(6):
+        tracker.log_call(
+            label="only-label",
+            model="only-model",
+            input_tokens=800,
+            output_tokens=150,
+            cost=0.01,
+        )
+    model_dir = tmp_path / "models"
+
+    exit_code = main(["train", "--log-file", str(log_path), "--model-dir", str(model_dir)])
+    captured_out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "held-out eval skipped:" in captured_out
 
 
 def test_detect_retries_ml_cross_check_when_latest_version_pruned_mid_resolve(

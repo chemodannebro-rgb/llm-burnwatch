@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.0] - 2026-07-05
+
+### Added
+- `report --json`: prints a machine-readable summary (same shape as the
+  human-readable output), matching the flag `detect` already had.
+- `report --trace-id <id>`: narrows the report to the calls belonging to
+  one request (e.g. a multi-step RAG turn logged under a shared
+  `trace_id`), finally surfacing a field that was captured on every call
+  but never read back anywhere.
+- `train` now computes and prints a held-out self-consistency eval
+  metric: a throwaway `IsolationForest` is fit on a deterministic ~80%
+  split of the feature matrix and evaluated against the remaining ~20%
+  it never saw, reporting what fraction of unseen examples it still
+  flags as anomalous. The model actually saved to the registry is still
+  fit on the full dataset afterward — the split only exists to produce
+  an honest metric. Skipped (with an explicit reason) below 20 total
+  training examples. Persisted in `metadata.json` as `eval_metrics`.
+  `train()` now returns `(version_dir, eval_metrics)`.
+- `cached_input_tokens` is now a feature evaluated by both the baseline
+  z-score detector and the `IsolationForest` cross-check (previously
+  logged but never scored by either detector) — closes a false-negative
+  gap where a group starting to hit cache heavily would look anomalously
+  cheap without anything actually being wrong.
+- `hypothesis`-based property/fuzz tests for the baseline z-score
+  statistics (`tests/test_baseline_properties.py`, new **dev-only**
+  `hypothesis` dependency): random-input coverage of `_median_mad`/
+  `_score_feature`/`analyze()` edge cases (all-identical values, MAD=0,
+  single-sample groups, negative/extreme magnitudes) beyond the existing
+  example-based tests.
+
+### Changed
+- `report` no longer materializes the whole log into a list before
+  processing it — it now streams records through a generator
+  (`_filter_report_records`) straight into `build_report()`, matching
+  the already-streaming design of `iter_log_records()`. `detect`/
+  `dashboard` are unchanged (out of scope: both need full group history
+  in memory for cross-record statistics).
+- `analyze()` computes each `(label, model)` group's median/MAD once per
+  group instead of once per record scored against it (previously
+  `O(group_size^2)` per group).
+
+### Fixed
+- `models/v1` (the committed example model registry) retrained to match
+  the new 4-feature shape (adding `cached_input_tokens`); the old
+  3-feature model would otherwise mismatch `IsolationForest.predict()`.
+
 ## [0.4.1] - 2026-07-05
 
 ### Added

@@ -57,7 +57,7 @@ def test_ml_detector_finds_all_injected_anomalies(tmp_path):
     from llmledger.anomaly.train import train
 
     records, is_anomaly = _generate(tmp_path)
-    version_dir = train(records, model_dir=tmp_path / "models")
+    version_dir, _eval_metrics = train(records, model_dir=tmp_path / "models")
     model, _metadata = load_model(version_dir)
 
     X, kept_indices = extract_features(records)

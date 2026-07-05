@@ -45,3 +45,19 @@ HIGH_CARDINALITY_WARNING_FRACTION = 0.5
 # human -- `baseline.format_score` renders the same situation as "extreme
 # deviation" for display.
 EXTREME_Z_SENTINEL = 100.0
+
+# Fraction of training examples held out (deterministically) to self-evaluate
+# the model against data it never trained on. The model actually saved to the
+# registry is still fit on the FULL dataset afterwards -- this split only
+# exists to produce an honest eval metric for `train` to print/store.
+EVAL_HOLDOUT_FRACTION = 0.2
+
+# Fixed seed for the holdout shuffle, so training on the same log always
+# reports the same eval metric instead of a different random split per run.
+EVAL_HOLDOUT_SEED = 0
+
+# Below this many total training examples, holding out EVAL_HOLDOUT_FRACTION
+# would leave too few points in either split to mean anything -- skip the
+# holdout and say so explicitly instead of printing a metric computed on a
+# handful of points.
+EVAL_HOLDOUT_MIN_EXAMPLES = 20

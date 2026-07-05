@@ -31,6 +31,7 @@ import json
 import os
 from datetime import date
 from pathlib import Path
+from typing import Iterator
 
 from . import __version__
 from ._messages import error, warn
@@ -45,7 +46,7 @@ from .anomaly.features import (
 from .anomaly.registry import latest_version_dir, load_model
 from .dashboard import render_dashboard
 from .demo_data import DEFAULT_SEED, write_demo_log
-from .logreader import check_scale, filter_by_period, iter_log_records
+from .logreader import check_scale, filter_by_period, iter_log_records, parse_date
 from .tracker import build_report, load_default_pricing
 
 DISCLAIMER = (
@@ -82,28 +83,74 @@ def _date_arg(value: str) -> str:
     return value
 
 
+def _filter_report_records(records, args, counts: dict) -> Iterator[dict]:
+    """Yield records matching `--since`/`--until`/`--trace-id`, counting the
+    total number seen and how many were dropped by the period filter along
+    the way -- `counts` is filled in as a side effect so the caller can still
+    run `check_scale()`/warn about period drops after this generator has been
+    fully consumed by `build_report()`, without ever materializing the whole
+    log into a list (unlike `detect`/`dashboard`, which need every record's
+    full group history in memory at once and are out of scope for this fix).
+    """
+    period_active = bool(args.since or args.until)
+    for record in records:
+        counts["total"] += 1
+        if period_active:
+            record_date = parse_date(record.get("timestamp"))
+            if (
+                record_date is None
+                or (args.since and record_date < args.since)
+                or (args.until and record_date > args.until)
+            ):
+                counts["dropped_period"] += 1
+                continue
+        if args.trace_id is not None and record.get("trace_id") != args.trace_id:
+            continue
+        yield record
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     try:
-        records = list(iter_log_records(args.log_file))
+        raw_records = iter_log_records(args.log_file)
     except FileNotFoundError as exc:
         error(str(exc))
         return 2
 
-    check_scale(args.log_file, len(records))
-    records = filter_by_period(records, args.since, args.until)
+    counts = {"total": 0, "dropped_period": 0}
     pricing = (
         _load_pricing_file(args.pricing_file) if args.pricing_file else load_default_pricing()
     )
-    result = build_report(records, pricing)
+    result = build_report(_filter_report_records(raw_records, args, counts), pricing)
 
-    _print_header(pricing)
+    check_scale(args.log_file, counts["total"])
+    if counts["dropped_period"]:
+        warn(
+            f"{counts['dropped_period']} record(s) fell outside --since/--until or lacked a "
+            "usable timestamp and were excluded from this period"
+        )
+
     if result["call_count"] == 0:
-        if args.since or args.until:
+        if args.json:
+            print(json.dumps(result, indent=2))
+            return 0
+        _print_header(pricing)
+        if args.trace_id is not None:
+            print(f"no records found for trace_id {args.trace_id!r}")
+        elif args.since or args.until:
             print("no records found in the given period")
         else:
             print("no records found in log")
         return 0
 
+    if args.json:
+        payload = dict(result)
+        if args.rub_rate is not None:
+            payload["rub_rate"] = args.rub_rate
+            payload["total_cost_rub"] = result["total_cost_usd"] * args.rub_rate
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    _print_header(pricing)
     print(f"calls: {result['call_count']}")
     total_cost_line = f"total cost: ${result['total_cost_usd']:.6f}"
     if args.rub_rate is not None:
@@ -361,7 +408,7 @@ def cmd_train(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        version_dir = train_model(
+        version_dir, eval_metrics = train_model(
             records,
             model_dir=args.model_dir,
             keep_last=args.keep_last,
@@ -372,6 +419,14 @@ def cmd_train(args: argparse.Namespace) -> int:
         return 2
 
     print(f"trained model saved to {version_dir}")
+    if eval_metrics["holdout_used"]:
+        print(
+            f"held-out eval: {eval_metrics['flagged_count']}/{eval_metrics['n_holdout_examples']} "
+            f"({eval_metrics['flagged_fraction']:.1%}) held-out example(s) flagged anomalous by "
+            "a model trained without them"
+        )
+    else:
+        print(f"held-out eval skipped: {eval_metrics['reason']}")
     return 0
 
 
@@ -411,6 +466,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=_date_arg,
         default=None,
         help="Only include records on or before this UTC calendar date (YYYY-MM-DD, inclusive)",
+    )
+    report_p.add_argument(
+        "--trace-id",
+        default=None,
+        help="Only include records with this exact trace_id (e.g. to find the cost of one "
+        "specific request across retries/sub-calls)",
+    )
+    report_p.add_argument(
+        "--json", action="store_true", help="Print a machine-readable JSON summary"
     )
     report_p.set_defaults(handler=cmd_report)
 

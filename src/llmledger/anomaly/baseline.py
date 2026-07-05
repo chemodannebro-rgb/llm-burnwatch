@@ -24,7 +24,7 @@ from typing import Sequence
 
 from .constants import MIN_GROUP_SAMPLES, Z_SCORE_THRESHOLD
 
-FEATURES = ("input_tokens", "output_tokens", "cost_micros")
+FEATURES = ("input_tokens", "output_tokens", "cost_micros", "cached_input_tokens")
 
 
 @dataclass
@@ -57,9 +57,8 @@ def _median_mad(values: Sequence[float]) -> tuple[float, float]:
 
 
 def _score_feature(
-    feature: str, value: float, history: Sequence[float], threshold: float
+    feature: str, value: float, med: float, mad: float, threshold: float
 ) -> FeatureScore:
-    med, mad = _median_mad(history)
     if mad == 0:
         is_extreme = value != med
         return FeatureScore(feature, value, med, mad, None, is_extreme, is_extreme)
@@ -95,6 +94,26 @@ def analyze(
         by_group.setdefault(_group_key(r), []).append(r)
         by_model.setdefault(_model_key(r), []).append(r)
 
+    # median()/MAD only depend on a group's *history*, not on the individual
+    # record being scored -- every record sharing the same `used_key` would
+    # otherwise recompute the identical statistics.median() call over that
+    # same history from scratch (O(group_size) per record, O(group_size^2)
+    # per group overall). Cache per (used_key, feature) instead, computed
+    # once the first time a group is actually used as history.
+    stats_cache: dict[tuple, dict[str, tuple[float, float]]] = {}
+
+    def _group_stats(key: tuple, history_records: list[dict]) -> dict[str, tuple[float, float]]:
+        cached = stats_cache.get(key)
+        if cached is not None:
+            return cached
+        computed = {}
+        for feature in FEATURES:
+            history = [h[feature] for h in history_records if feature in h]
+            if history:
+                computed[feature] = _median_mad(history)
+        stats_cache[key] = computed
+        return computed
+
     results = []
     for r in records:
         gkey = _group_key(r)
@@ -114,13 +133,14 @@ def analyze(
                 )
                 continue
 
+        group_stats = _group_stats(used_key, history_records)
         scores = []
         for feature in FEATURES:
-            history = [h[feature] for h in history_records if feature in h]
             value = r.get(feature)
-            if value is None or not history:
+            if value is None or feature not in group_stats:
                 continue
-            scores.append(_score_feature(feature, value, history, threshold))
+            med, mad = group_stats[feature]
+            scores.append(_score_feature(feature, value, med, mad, threshold))
 
         status = "anomaly" if any(s.is_anomalous for s in scores) else "ok"
         results.append(

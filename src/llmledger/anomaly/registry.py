@@ -75,12 +75,13 @@ def save_model(
     n_examples: int,
     reference_stats: dict,
     keep_last: int = KEEP_LAST_DEFAULT,
+    eval_metrics: dict | None = None,
 ) -> Path:
     """Serialize `model` via `skops.io` into a newly allocated version
-    directory, write its metadata (including a sha256 integrity hash and
-    reference statistics for later drift detection), chmod both files
-    0600, and prune old versions beyond `keep_last`. Returns the new
-    version directory.
+    directory, write its metadata (including a sha256 integrity hash,
+    reference statistics for later drift detection, and an optional
+    held-out eval metric from `train()`), chmod both files 0600, and prune
+    old versions beyond `keep_last`. Returns the new version directory.
     """
     import skops.io as sio
 
@@ -99,6 +100,7 @@ def save_model(
         "n_examples": n_examples,
         "model_sha256": model_sha256,
         "reference_stats": reference_stats,
+        "eval_metrics": eval_metrics,
     }
     metadata_path = version_dir / "metadata.json"
     with metadata_path.open("w", encoding="utf-8") as fh:
