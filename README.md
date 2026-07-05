@@ -9,6 +9,10 @@ Local, zero-dependency cost tracking and statistical anomaly detection for
 LLM/agent calls. Logs go to a plain JSONL file on your own disk; nothing
 leaves the machine.
 
+A `dashboard` command also turns that log into a single static HTML file
+(no JS, no external services) — see the CLI table below. It's due for a
+redesign, so no screenshot here yet.
+
 ## Quickstart
 
 Not published to PyPI (portfolio project) — install from a local clone:

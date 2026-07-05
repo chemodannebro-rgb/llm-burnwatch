@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.1] - 2026-07-05
+
+### Added
+- `detect --json`: each flagged feature now also includes a `reason`
+  string — the same human-readable z-score/median/MAD explanation
+  already printed by the non-JSON output (`baseline.format_score()`),
+  so JSON consumers don't have to recompute it from the raw numbers.
+- README: one-line mention that a `dashboard` command exists (a
+  screenshot is intentionally deferred until the dashboard's next
+  redesign).
+
+### Fixed
+- `detect`'s ML cross-check no longer treats a version pruned by a
+  concurrent `train()` run as a hard failure: `latest_version_dir()`
+  resolving a version right before a concurrent `train()` prunes it
+  (e.g. `keep_last=1`) used to make that run's ML cross-check
+  unavailable even though a newer, perfectly good model existed a
+  moment later. `_run_ml_cross_check` now retries (bounded, 3 attempts)
+  by re-resolving "latest" specifically on `FileNotFoundError`.
+
 ## [0.4.0] - 2026-07-05
 
 ### Added

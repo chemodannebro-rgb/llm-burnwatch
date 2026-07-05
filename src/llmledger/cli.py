@@ -165,6 +165,9 @@ def cmd_demo_data(args: argparse.Namespace) -> int:
     return 0
 
 
+_ML_CROSS_CHECK_LOAD_ATTEMPTS = 3
+
+
 def _run_ml_cross_check(records: list[dict], model_dir: str) -> dict | None:
     """Return an ML cross-check summary, or `None` if no trained model
     exists yet at `model_dir`. Never raises: missing scikit-learn, a
@@ -174,29 +177,50 @@ def _run_ml_cross_check(records: list[dict], model_dir: str) -> dict | None:
     dict's `available` flag instead of aborting `detect` entirely -- the
     baseline result is still valid and should still be printed even when the
     ML side of the registry is unusable.
-    """
-    version_dir = latest_version_dir(model_dir)
-    if version_dir is None:
-        return None
 
-    try:
-        model, metadata = load_model(version_dir)
-    except ImportError:
-        warn(
-            "a trained model exists but scikit-learn is not installed; "
-            "skipping ML cross-check. Install with: "
-            'pip install "llmledger[anomaly]"'
-        )
-        return {"available": False, "reason": "scikit-learn not installed"}
-    except ValueError as exc:
-        error(str(exc))
-        return {"available": False, "reason": str(exc)}
-    except (OSError, json.JSONDecodeError) as exc:
-        error(
-            f"could not load model registry at {version_dir}: {exc}. "
-            "Skipping ML cross-check; re-run `llmledger train` to regenerate it."
-        )
-        return {"available": False, "reason": str(exc)}
+    `latest_version_dir()` + `load_model()` are two separate steps, so a
+    concurrent `train()` can prune the exact version just resolved as
+    "latest" in between them (e.g. `keep_last=1` and a new version finishes
+    training right after `latest_version_dir()` returns). That race would
+    otherwise surface as an avoidable `FileNotFoundError` even though a
+    perfectly good (newer) model exists on disk a moment later -- so on
+    that specific error only, re-resolve "latest" and retry a bounded
+    number of times before giving up.
+    """
+    version_dir = None
+    for attempt in range(_ML_CROSS_CHECK_LOAD_ATTEMPTS):
+        version_dir = latest_version_dir(model_dir)
+        if version_dir is None:
+            return None
+
+        try:
+            model, metadata = load_model(version_dir)
+            break
+        except ImportError:
+            warn(
+                "a trained model exists but scikit-learn is not installed; "
+                "skipping ML cross-check. Install with: "
+                'pip install "llmledger[anomaly]"'
+            )
+            return {"available": False, "reason": "scikit-learn not installed"}
+        except ValueError as exc:
+            error(str(exc))
+            return {"available": False, "reason": str(exc)}
+        except FileNotFoundError as exc:
+            if attempt == _ML_CROSS_CHECK_LOAD_ATTEMPTS - 1:
+                error(
+                    f"could not load model registry at {version_dir}: {exc}. "
+                    "It was likely pruned by a concurrent `llmledger train` "
+                    "run. Skipping ML cross-check for this run."
+                )
+                return {"available": False, "reason": str(exc)}
+            continue
+        except (OSError, json.JSONDecodeError) as exc:
+            error(
+                f"could not load model registry at {version_dir}: {exc}. "
+                "Skipping ML cross-check; re-run `llmledger train` to regenerate it."
+            )
+            return {"available": False, "reason": str(exc)}
 
     X, kept_indices = extract_features(records)
     ml_anomaly_indices = []
@@ -272,6 +296,11 @@ def cmd_detect(args: argparse.Namespace) -> int:
                             "mad": s.mad,
                             "z_score": s.z_score,
                             "is_extreme": s.is_extreme,
+                            # Same human-readable explanation `detect`'s
+                            # non-JSON output prints via `format_score()`,
+                            # so a JSON consumer doesn't have to recompute
+                            # it from the raw numbers above.
+                            "reason": format_score(s),
                         }
                         for s in a.scores
                         if s.is_anomalous

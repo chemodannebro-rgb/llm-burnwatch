@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import socket
 import sys
 
@@ -235,6 +236,27 @@ def test_detect_command_json_output_is_valid_json_with_expected_keys(tmp_path, c
     assert payload["ml"] is None  # no trained model yet
 
 
+def test_detect_json_anomaly_features_include_human_readable_reason(tmp_path, capsys):
+    # BACKLOG.md #2: the z-score/median/MAD breakdown was already printed in
+    # human-readable form via `format_score()` in the non-JSON output, but
+    # wasn't exposed to JSON consumers -- they had to recompute the same
+    # explanation from the raw numbers themselves.
+    log_path = _demo_log(tmp_path, n_normal=200, n_anomalies=10)
+
+    exit_code = main(
+        ["detect", "--log-file", str(log_path), "--model-dir", str(tmp_path / "models"), "--json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["anomalies"], "expected at least one anomaly in the demo log"
+    features = payload["anomalies"][0]["features"]
+    assert features, "expected the first anomaly to have at least one flagged feature"
+    for f in features:
+        assert "reason" in f
+        assert f["feature"] in f["reason"]
+
+
 def test_detect_command_threshold_override_changes_results(tmp_path, capsys):
     log_path = _demo_log(tmp_path, n_normal=200, n_anomalies=10)
 
@@ -287,6 +309,55 @@ def test_train_then_detect_uses_trained_model(tmp_path, capsys):
     assert detect_exit == 1
     assert payload["ml"]["available"] is True
     assert payload["ml"]["anomaly_count"] > 0
+
+
+def test_detect_retries_ml_cross_check_when_latest_version_pruned_mid_resolve(
+    tmp_path, capsys, monkeypatch
+):
+    # Simulates the race from BACKLOG.md #21: `latest_version_dir()` resolves
+    # a version, then a concurrent `train()` prunes it before `load_model()`
+    # runs. `_run_ml_cross_check` should re-resolve and retry instead of just
+    # reporting the ML cross-check unavailable.
+    pytest.importorskip("sklearn")
+    log_path = _demo_log(tmp_path, n_normal=200, n_anomalies=10)
+    model_dir = tmp_path / "models"
+
+    main(["train", "--log-file", str(log_path), "--model-dir", str(model_dir)])
+    capsys.readouterr()
+    stale_dir = model_dir / "v1"
+
+    main(["train", "--log-file", str(log_path), "--model-dir", str(model_dir)])
+    capsys.readouterr()
+    real_latest = model_dir / "v2"
+    assert real_latest.exists()
+
+    # Simulate v1 having just been pruned by a concurrent `train()` run,
+    # happening in the window between `latest_version_dir()` resolving it
+    # and `load_model()` reading it.
+    shutil.rmtree(stale_dir)
+
+    import llmledger.cli as cli_module
+
+    real_latest_version_dir = cli_module.latest_version_dir
+    calls = {"n": 0}
+
+    def _stale_then_real(model_dir_arg):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return stale_dir
+        return real_latest_version_dir(model_dir_arg)
+
+    monkeypatch.setattr(cli_module, "latest_version_dir", _stale_then_real)
+
+    exit_code = main(
+        ["detect", "--log-file", str(log_path), "--model-dir", str(model_dir), "--json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["ml"]["available"] is True
+    assert payload["ml"]["model_version"] == 2
+    assert calls["n"] == 2
 
 
 def test_detect_survives_missing_metadata_json_and_still_reports_baseline(tmp_path, capsys):
