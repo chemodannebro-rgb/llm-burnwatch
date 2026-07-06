@@ -20,6 +20,7 @@ from .baseline_detector import BaselineDetector
 from .cusum_detector import CusumDetector
 from .frequency_detector import FrequencyDetector
 from .protocol import Alert, Detector
+from .rules_detector import RulesDetector
 
 # `FrequencyDetector.enabled_by_default` is `False`, so registering it here
 # doesn't change `run_detectors()`'s output for any existing caller -- it
@@ -29,11 +30,15 @@ from .protocol import Alert, Detector
 # but `detect`'s CLI still builds its own explicit registry rather than
 # using `DEFAULT_REGISTRY` (see `cli.py`'s `cmd_detect`), so adding it here
 # doesn't change `detect`'s current output either -- this registry is for
-# future callers (e.g. `detect --follow`) that use it directly.
+# future callers (e.g. `detect --follow`) that use it directly. `RulesDetector()`
+# with no configuration is a deliberate no-op (see its docstring), so it's
+# always safe to include here even though this default instance never has
+# any rule to enforce.
 DEFAULT_REGISTRY: list[Detector] = [
     BaselineDetector(),
     FrequencyDetector(),
     CusumDetector(),
+    RulesDetector(),
 ]
 
 # Sort key only -- not a claim that "info" alerts matter less, just a stable,

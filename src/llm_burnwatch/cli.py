@@ -52,6 +52,7 @@ from .dashboard import render_dashboard
 from .demo_data import DEFAULT_SEED, write_demo_log
 from .detectors.baseline_detector import BaselineDetector
 from .detectors.engine import run_detectors
+from .detectors.rules_detector import RulesDetector
 from .logreader import check_scale, filter_by_period, iter_log_records, parse_date
 from .pricing_import import PricingImportError, import_pricing
 from .tracker import build_report, resolve_pricing, user_pricing_path
@@ -395,10 +396,24 @@ def cmd_detect(args: argparse.Namespace) -> int:
         return 0
 
     check_label_cardinality(records)
-    alerts = run_detectors(records, registry=[BaselineDetector(threshold=args.threshold)])
+    alerts = run_detectors(
+        records,
+        registry=[
+            BaselineDetector(threshold=args.threshold),
+            RulesDetector(
+                allowed_models=args.allowed_models,
+                max_call_cost_usd=args.max_call_cost,
+                max_trace_cost_usd=args.max_trace_cost,
+            ),
+        ],
+    )
 
     anomalous = [(a.record_ref, a) for a in alerts if a.kind == "zscore_outlier"]
     insufficient_count = sum(1 for a in alerts if a.kind == "insufficient_data")
+    # Hard-limit violations from RulesDetector -- a distinct, additive
+    # concern from the baseline z-score's statistical "anomalies" above,
+    # so they get their own count/section rather than being folded into it.
+    rule_violations = [a for a in alerts if a.detector == "rules"]
 
     ml_info = _run_ml_cross_check(records, args.model_dir)
 
@@ -422,6 +437,16 @@ def cmd_detect(args: argparse.Namespace) -> int:
                 }
                 for i, a in anomalous
             ],
+            "rule_violation_count": len(rule_violations),
+            "rule_violations": [
+                {
+                    "index": a.record_ref,
+                    "kind": a.kind,
+                    "message": a.message,
+                    "evidence": a.evidence,
+                }
+                for a in rule_violations
+            ],
             "ml": ml_info,
         }
         print(json.dumps(payload, indent=2))
@@ -437,13 +462,17 @@ def cmd_detect(args: argparse.Namespace) -> int:
             print(f"- [{i}] {r.get('label')} / {r.get('model')} @ {r.get('timestamp')}")
             for s in a.evidence["scores"]:
                 print(f"    {s['reason']}")
+        if rule_violations:
+            print(f"{len(rule_violations)} rule violation(s) found:")
+            for a in rule_violations:
+                print(f"- [{a.record_ref}] {a.kind}: {a.message}")
         if ml_info is not None and ml_info.get("available"):
             print(
                 f"ML cross-check (model v{ml_info['model_version']}): "
                 f"{ml_info['anomaly_count']} call(s) flagged"
             )
 
-    return 1 if anomalous else 0
+    return 1 if (anomalous or rule_violations) else 0
 
 
 def _contamination_type(value: str):
@@ -693,6 +722,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     detect_p.add_argument(
         "--json", action="store_true", help="Print a machine-readable JSON summary"
+    )
+    detect_p.add_argument(
+        "--allowed-models",
+        nargs="+",
+        default=None,
+        help="Only these models are allowed; any other model triggers a critical rule violation",
+    )
+    detect_p.add_argument(
+        "--max-call-cost",
+        type=_positive_float,
+        default=None,
+        help="Maximum cost (USD) for a single call before it's flagged as a rule violation",
+    )
+    detect_p.add_argument(
+        "--max-trace-cost",
+        type=_positive_float,
+        default=None,
+        help="Maximum total cost (USD) for a single trace_id before it's flagged as a rule violation",
     )
     detect_p.set_defaults(handler=cmd_detect)
 

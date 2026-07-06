@@ -59,6 +59,26 @@ All notable changes to this project are documented in this file.
   `detectors.engine.DEFAULT_REGISTRY`, but `detect`'s CLI still builds its
   own explicit registry, so this has no effect on `detect`'s current
   output.
+- `detectors.rules_detector.RulesDetector` (v0.8.3): a new detector that
+  enforces explicit, user-configured policies rather than a statistical
+  threshold — a model allowlist, a per-call cost cap, and a per-`trace_id`
+  cost cap. Unlike the other detectors, these aren't tuned from statistics;
+  they're the caller's own limits, so they're exposed as three new `detect`
+  CLI flags: `--allowed-models <model ...>`, `--max-call-cost <usd>`, and
+  `--max-trace-cost <usd>`. Every alert is `severity="critical"`
+  (`model_not_allowed`, `call_cost_exceeded`, `trace_cost_exceeded`) — this
+  is a hard safety net, not a heuristic. The per-trace check reports the
+  specific call whose cumulative cost pushed the trace's running total over
+  the cap, not just the trace's last or priciest call. Ships **enabled by
+  default**, but an unconfigured `RulesDetector()` (no flags passed) is a
+  deliberate no-op: there's no safe universal default for "which models are
+  allowed" or "how much a call should cost."
+- `detect --json` gains two new, purely additive keys, `rule_violation_count`
+  and `rule_violations`; the text output gains a new "N rule violation(s)
+  found" section. All pre-existing keys/output (`anomalies`, `anomaly_count`,
+  `threshold`, `insufficient_data_count`, `ml`) are unchanged. `detect`'s
+  exit code now also returns `1` when a rule violation is found, in addition
+  to the existing statistical-anomaly case.
 
 ## [0.7.0] - 2026-07-05
 
