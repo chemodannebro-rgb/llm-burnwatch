@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.8.0] - 2026-07-06
 
 ### Added
 - `llm_burnwatch.detectors`: a new internal package laying the architectural
@@ -178,6 +178,37 @@ All notable changes to this project are documented in this file.
   A dedicated `validate --alerts` command analogous to the existing
   `validate` (which checks input records against `schema.json`) is a
   reasonable future addition but out of scope for this change.
+- `demo_data` (v0.8.7): five new independent synthetic scenario generators
+  — `runaway_loop()`, `model_swap()`, `prompt_regression()`, `gradual_drift()`,
+  `weekend_pattern()` — one per detector added in v0.8.1-0.8.4, each modeling
+  a distinct real money-losing incident the pre-existing single
+  amplitude-outlier profile (`generate_demo_calls`/`write_demo_log`, still
+  unchanged) can't exercise: a burst of call *volume* (`FrequencyDetector`),
+  a swapped-in disallowed model (`RulesDetector`'s `allowed_models`), a
+  sudden or gradual level shift in response size (`CusumDetector`), and a
+  recurring weekly calendar pattern (`FrequencyDetector`'s seasonal
+  bucketing). Each generator builds schema-compliant record dicts directly
+  (rather than through `CostTracker.log_call()`, which always stamps the
+  real wall-clock time and so can't produce the multi-window/multi-week
+  synthetic timestamps several of these scenarios need) and returns
+  `list[tuple[dict, str | None]]` — the record plus the injected scenario
+  name for calls that are part of the incident, `None` for normal calls,
+  mirroring the existing `is_anomaly` convention. Each has its own fixed
+  seed (`_SCENARIO_SEEDS`) so no scenario's random data depends on which
+  other scenarios happen to run in the same process — a cross-contamination
+  risk raised on review.
+- `tests/test_anomaly_sanity.py` extended with one recall/precision test per
+  scenario against its paired detector (including, for `weekend_pattern`,
+  separate checks that the same recurring burst is flagged without seasonal
+  coverage, learned as normal with enough weeks of history, and still
+  flagged if it's abnormally large even for its own weekly slot), plus a
+  check that a clean, anomaly-free synthetic log triggers no false positives
+  from `CusumDetector`/`RulesDetector` (bounded, not exactly zero, for CUSUM
+  — its threshold is tuned for a low false-positive *rate*, not a hard
+  guarantee against random Gaussian noise; `FrequencyDetector` is excluded
+  from this specific check since `write_demo_log`'s real-time stamping logs
+  all calls back-to-back into a single window, an artifact of the demo
+  script rather than a realistic call rate).
 
 ## [0.7.0] - 2026-07-05
 
