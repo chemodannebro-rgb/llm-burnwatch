@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## [0.7.0] - 2026-07-05
 
+> **Known gap (tech debt):** `.github/workflows/release.yml` publishes to
+> PyPI via trusted publishing (OIDC) on `v*` tags, but the one-time PyPI
+> Trusted Publisher registration for `llm-burnwatch` has not been done
+> yet. Until it is, the `v0.7.0` tag is intentionally not pushed — pushing
+> it would trigger a workflow run that fails at the publish step.
+
 ### Changed
 - **Project renamed from `llmledger` to `llm-burnwatch`** (PyPI/CLI name
   `llm-burnwatch`, importable package `llm_burnwatch`) ahead of the first
