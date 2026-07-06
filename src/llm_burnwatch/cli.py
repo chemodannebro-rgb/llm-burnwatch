@@ -48,10 +48,12 @@ from .anomaly.features import (
     extract_features,
 )
 from .anomaly.registry import latest_version_dir, load_model
+from .anomaly.seasonal import has_seasonal_coverage, seasonal_coverage_message
 from .dashboard import render_dashboard
 from .demo_data import DEFAULT_SEED, write_demo_log
 from .detectors.baseline_detector import BaselineDetector
 from .detectors.engine import run_detectors
+from .detectors.frequency_detector import FrequencyDetector
 from .detectors.rules_detector import RulesDetector
 from .logreader import check_scale, filter_by_period, iter_log_records, parse_date
 from .pricing_import import PricingImportError, import_pricing
@@ -396,16 +398,31 @@ def cmd_detect(args: argparse.Namespace) -> int:
         return 0
 
     check_label_cardinality(records)
+    # "auto" (the default) enables the frequency detector only once this log
+    # has enough calendar span for its seasonal (weekday x hour) comparison
+    # to be meaningful -- otherwise a routine "every Monday morning" burst
+    # looks statistically identical to a runaway agent (see
+    # `FrequencyDetector`'s docstring). `--frequency-detector on/off`
+    # overrides that decision explicitly in either direction, the same
+    # override pattern already used for `RulesDetector`'s CLI flags.
+    seasonal_available = has_seasonal_coverage(records)
+    if args.frequency_detector == "auto":
+        frequency_enabled = seasonal_available
+    else:
+        frequency_enabled = args.frequency_detector == "on"
+
     alerts = run_detectors(
         records,
         registry=[
             BaselineDetector(threshold=args.threshold),
+            FrequencyDetector(),
             RulesDetector(
                 allowed_models=args.allowed_models,
                 max_call_cost_usd=args.max_call_cost,
                 max_trace_cost_usd=args.max_trace_cost,
             ),
         ],
+        enabled_overrides={"frequency": frequency_enabled},
     )
 
     anomalous = [(a.record_ref, a) for a in alerts if a.kind == "zscore_outlier"]
@@ -414,6 +431,9 @@ def cmd_detect(args: argparse.Namespace) -> int:
     # concern from the baseline z-score's statistical "anomalies" above,
     # so they get their own count/section rather than being folded into it.
     rule_violations = [a for a in alerts if a.detector == "rules"]
+    # Frequency spikes -- likewise additive; only present at all when
+    # `frequency_enabled` is True for this run.
+    frequency_spikes = [a for a in alerts if a.detector == "frequency"]
 
     ml_info = _run_ml_cross_check(records, args.model_dir)
 
@@ -447,6 +467,21 @@ def cmd_detect(args: argparse.Namespace) -> int:
                 }
                 for a in rule_violations
             ],
+            "seasonal_baseline": {
+                "available": seasonal_available,
+                "message": seasonal_coverage_message(records),
+            },
+            "frequency_detector_enabled": frequency_enabled,
+            "frequency_spike_count": len(frequency_spikes),
+            "frequency_spikes": [
+                {
+                    "index": a.record_ref,
+                    "group_key": a.group_key,
+                    "message": a.message,
+                    "evidence": a.evidence,
+                }
+                for a in frequency_spikes
+            ],
             "ml": ml_info,
         }
         print(json.dumps(payload, indent=2))
@@ -466,13 +501,17 @@ def cmd_detect(args: argparse.Namespace) -> int:
             print(f"{len(rule_violations)} rule violation(s) found:")
             for a in rule_violations:
                 print(f"- [{a.record_ref}] {a.kind}: {a.message}")
+        if frequency_enabled and frequency_spikes:
+            print(f"{len(frequency_spikes)} frequency spike(s) found:")
+            for a in frequency_spikes:
+                print(f"- [{a.record_ref}] {a.group_key}: {a.message}")
         if ml_info is not None and ml_info.get("available"):
             print(
                 f"ML cross-check (model v{ml_info['model_version']}): "
                 f"{ml_info['anomaly_count']} call(s) flagged"
             )
 
-    return 1 if (anomalous or rule_violations) else 0
+    return 1 if (anomalous or rule_violations or frequency_spikes) else 0
 
 
 def _contamination_type(value: str):
@@ -740,6 +779,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_float,
         default=None,
         help="Maximum total cost (USD) for a single trace_id before it's flagged as a rule violation",
+    )
+    detect_p.add_argument(
+        "--frequency-detector",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help=(
+            "Runaway-agent frequency detector: 'auto' (default) enables it only once "
+            "the log has enough calendar span for a seasonal (weekday/hour) baseline; "
+            "'on'/'off' override that decision explicitly"
+        ),
     )
     detect_p.set_defaults(handler=cmd_detect)
 

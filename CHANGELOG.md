@@ -79,6 +79,40 @@ All notable changes to this project are documented in this file.
   `threshold`, `insufficient_data_count`, `ml`) are unchanged. `detect`'s
   exit code now also returns `1` when a rule violation is found, in addition
   to the existing statistical-anomaly case.
+- `anomaly.seasonal` (v0.8.4): a new module answering "does this log span
+  enough calendar time for a day-of-week x hour-of-day comparison to be
+  meaningful at all" (`has_seasonal_coverage()`, gated on calendar *range* via
+  the new `MIN_SEASONAL_SPAN_DAYS` constant, 14 days -- not record count, the
+  same million-calls-in-one-afternoon-still-can't-tell-Monday-from-Friday
+  reasoning already used for `MIN_GROUP_SAMPLES` elsewhere), plus
+  `seasonal_coverage_message()` for an honest, never-silent explanation of
+  that decision (mirrors `insufficient_data` elsewhere in `anomaly/`).
+- `FrequencyDetector` now buckets each time window by `(weekday, hour)` and
+  compares it against that bucket's own history once a log has seasonal
+  coverage, instead of only ever comparing against the group's flat, pooled
+  history. A bucket's history deliberately excludes windows from the *same*
+  calendar date as the window being scored -- without that exclusion, a
+  single new hour-long burst would dominate its own bucket's statistics and
+  "learn itself" as normal the instant it happens, permanently blinding the
+  detector to it. Any `(weekday, hour)` bucket without at least
+  `MIN_GROUP_SAMPLES` worth of history from *other* dates falls back to the
+  pre-existing flat comparison. Net effect: a burst that recurs identically
+  enough times to become the expected pattern for its time slot (e.g. "every
+  Monday morning") stops being flagged, while a first-ever burst, or one
+  that's unusually large even for its own normally-busy time slot, still is
+  (see `test_features_seasonal.py`).
+- `detect` gains a new `--frequency-detector {auto,on,off}` flag (default
+  `auto`) and now wires `FrequencyDetector` into its registry. `auto` enables
+  it only when `has_seasonal_coverage()` is true for the log being analyzed;
+  `on`/`off` override that decision explicitly in either direction, the same
+  override pattern already established for `RulesDetector`'s flags.
+  `--json` gains three new, purely additive keys -- `seasonal_baseline`
+  (`{"available", "message"}`), `frequency_detector_enabled`, and
+  `frequency_spike_count`/`frequency_spikes` -- and the text output gains a
+  new "N frequency spike(s) found" section, printed only when the detector
+  was enabled for this run. `detect`'s exit code now also returns `1` when a
+  frequency spike is found. `CusumDetector` remains unwired into `detect`'s
+  CLI registry -- out of scope for this change, unchanged from v0.8.2.
 
 ## [0.7.0] - 2026-07-05
 

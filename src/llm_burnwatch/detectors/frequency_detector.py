@@ -1,15 +1,28 @@
 """Frequency (runaway-agent) detector: flags time windows whose call count
 is anomalously high relative to that group's own history of window counts.
 
-Ships **disabled by default** (`enabled_by_default = False`, decided
-up front rather than added as an afterthought): without a notion of
-expected daily/weekly call patterns (seasonal baselines, a later v0.8 task),
-a routine "every Monday morning" burst of calls looks statistically
-identical to a runaway agent looping out of control -- see
-`FREQUENCY_Z_THRESHOLD`'s docstring in `anomaly/constants.py`. Once seasonal
-baselines are available for a given log, the caller is expected to pass
-`enabled_overrides={"frequency": True}` to `run_detectors()`;
-`FrequencyDetector` itself never flips its own default.
+Ships **disabled by default** (`enabled_by_default = False`, decided up
+front rather than added as an afterthought) at the package level -- it's
+`cmd_detect` that decides whether to actually run it for a given log, based
+on whether that log has enough calendar span for a seasonal comparison (see
+`anomaly.seasonal.has_seasonal_coverage`); `FrequencyDetector` itself never
+flips its own default.
+
+Independently of whether the detector runs at all, `analyze()` checks that
+same span condition itself and, if it holds, additionally compares each
+window against its own (weekday, hour) bucket's history rather than only
+the group's flat, pooled history: a window's bucket history is built only
+from *other calendar dates* that share its (weekday, hour) -- a window is
+never allowed to use itself, or other windows from the same calendar
+date/hour, as its own baseline, which would otherwise make a first-ever
+hour-long burst invisible to itself (it would "learn" its own burst as
+normal in the same instant it happens). A bucket that doesn't yet have
+`MIN_GROUP_SAMPLES` worth of history from other dates falls back to the
+flat, group-wide comparison from v0.8.1. This is what lets a routine
+"every Monday morning" burst stop being flagged once it has recurred often
+enough to become the expected pattern for that specific time slot, while a
+burst that's still new -- or one that's unusually large even for a
+normally-busy Monday morning -- is still caught.
 
 Batch/offline like `BaselineDetector`: windows are built from the whole
 input sequence at once, not accumulated incrementally across calls. This is
@@ -31,6 +44,7 @@ from ..anomaly.constants import (
     FREQUENCY_Z_THRESHOLD,
     MIN_GROUP_SAMPLES,
 )
+from ..anomaly.seasonal import has_seasonal_coverage
 from ..logreader import parse_timestamp
 from .protocol import Alert
 
@@ -62,9 +76,18 @@ def _bucket_by_window(records: Sequence[dict], key_fn) -> dict[tuple, dict[int, 
     return buckets
 
 
-def _window_start_iso(window_index: int) -> str:
+def _window_start_dt(window_index: int) -> datetime:
     epoch_seconds = window_index * FREQUENCY_WINDOW_SECONDS
-    return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc)
+
+
+def _window_start_iso(window_index: int) -> str:
+    return _window_start_dt(window_index).isoformat()
+
+
+def _seasonal_bucket(window_index: int) -> tuple:
+    dt = _window_start_dt(window_index)
+    return (dt.weekday(), dt.hour)
 
 
 class FrequencyDetector:
@@ -83,58 +106,88 @@ class FrequencyDetector:
         """Runs the per-(label, model) check and the log-wide (global)
         check independently -- a burst can trip either, both, or neither.
         """
-        alerts = self._analyze_keyed(records, _group_key)
-        alerts += self._analyze_keyed(records, lambda r: GLOBAL_GROUP_KEY)
+        seasonal = has_seasonal_coverage(records)
+        alerts = self._analyze_keyed(records, _group_key, seasonal)
+        alerts += self._analyze_keyed(records, lambda r: GLOBAL_GROUP_KEY, seasonal)
         return alerts
 
-    def _analyze_keyed(self, records: Sequence[dict], key_fn) -> list[Alert]:
+    def _analyze_keyed(self, records: Sequence[dict], key_fn, seasonal: bool) -> list[Alert]:
         buckets = _bucket_by_window(records, key_fn)
         alerts: list[Alert] = []
-
         for group_key, windows in buckets.items():
-            call_counts = [len(idxs) for idxs in windows.values()]
-            enough_history = len(call_counts) >= MIN_GROUP_SAMPLES
-            median = mad = None
-            if enough_history:
-                median, mad = _median_mad(call_counts)
+            alerts += self._analyze_group(group_key, windows, seasonal)
+        return alerts
 
-            for window_index in sorted(windows):
-                idxs = windows[window_index]
-                n_calls = len(idxs)
+    def _analyze_group(self, group_key: tuple, windows: dict, seasonal: bool) -> list[Alert]:
+        call_counts = [len(idxs) for idxs in windows.values()]
+        enough_flat_history = len(call_counts) >= MIN_GROUP_SAMPLES
+        flat_median = flat_mad = None
+        if enough_flat_history:
+            flat_median, flat_mad = _median_mad(call_counts)
 
-                z = None
-                is_spike = False
-                if enough_history:
-                    if mad == 0:
-                        is_spike = n_calls > median
-                    else:
-                        z = 0.6745 * (n_calls - median) / mad
-                        is_spike = z > self.z_threshold
-                if n_calls >= self.abs_threshold:
-                    is_spike = True
+        # {(weekday, hour): {calendar_date: [window_calls, ...]}} -- lets a
+        # window's seasonal history exclude windows from its own calendar
+        # date (see class docstring for why that exclusion matters).
+        by_seasonal_bucket: dict[tuple, dict] = defaultdict(lambda: defaultdict(list))
+        if seasonal:
+            for window_index in windows:
+                bucket = _seasonal_bucket(window_index)
+                date = _window_start_dt(window_index).date()
+                by_seasonal_bucket[bucket][date].append(len(windows[window_index]))
 
-                if not is_spike:
-                    continue
+        alerts = []
+        for window_index in sorted(windows):
+            idxs = windows[window_index]
+            n_calls = len(idxs)
 
-                alerts.append(
-                    Alert(
-                        detector=self.name,
-                        severity="warning",
-                        kind="frequency_spike",
-                        group_key=group_key,
-                        record_ref=idxs[0],
-                        evidence={
-                            "window_start": _window_start_iso(window_index),
-                            "window_calls": n_calls,
-                            "expected_calls": median,
-                            "z": z,
-                        },
-                        message=(
-                            f"{n_calls} call(s) in a single "
-                            f"{FREQUENCY_WINDOW_SECONDS}s window"
-                            + (f" (expected ~{median})" if median is not None else "")
-                        ),
-                    )
+            median, mad = flat_median, flat_mad
+            if seasonal:
+                bucket = _seasonal_bucket(window_index)
+                date = _window_start_dt(window_index).date()
+                other_counts = [
+                    c
+                    for d, counts in by_seasonal_bucket[bucket].items()
+                    if d != date
+                    for c in counts
+                ]
+                if len(other_counts) >= MIN_GROUP_SAMPLES:
+                    median, mad = _median_mad(other_counts)
+                # else: not enough same-bucket history from other calendar
+                # dates yet -- keep the flat fallback assigned above.
+
+            z = None
+            is_spike = False
+            if median is not None:
+                if mad == 0:
+                    is_spike = n_calls > median
+                else:
+                    z = 0.6745 * (n_calls - median) / mad
+                    is_spike = z > self.z_threshold
+            if n_calls >= self.abs_threshold:
+                is_spike = True
+
+            if not is_spike:
+                continue
+
+            alerts.append(
+                Alert(
+                    detector=self.name,
+                    severity="warning",
+                    kind="frequency_spike",
+                    group_key=group_key,
+                    record_ref=idxs[0],
+                    evidence={
+                        "window_start": _window_start_iso(window_index),
+                        "window_calls": n_calls,
+                        "expected_calls": median,
+                        "z": z,
+                    },
+                    message=(
+                        f"{n_calls} call(s) in a single "
+                        f"{FREQUENCY_WINDOW_SECONDS}s window"
+                        + (f" (expected ~{median})" if median is not None else "")
+                    ),
                 )
+            )
 
         return alerts

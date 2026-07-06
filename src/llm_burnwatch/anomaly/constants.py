@@ -108,3 +108,14 @@ CUSUM_H_MULTIPLIER = 12.0
 # recommendation of setting the slack to about half the smallest shift
 # you want to reliably detect (Page 1954; Montgomery).
 CUSUM_SLACK_MULTIPLIER = 0.5
+
+# Seasonal (day-of-week x hour-of-day) baselines for the frequency detector:
+# a log must span at least this many calendar days (checked by date *range*,
+# not record count -- see `anomaly.seasonal.log_span_days`) before
+# day-of-week/hour-of-day bucketing is even attempted. Two weeks is the
+# minimum needed to compare "this Monday" against at least one other Monday
+# at all; individual (weekday, hour) buckets separately still need their own
+# MIN_GROUP_SAMPLES worth of history from *other* calendar dates before
+# being trusted over the flat, non-seasonal fallback (see
+# `detectors.frequency_detector.FrequencyDetector`).
+MIN_SEASONAL_SPAN_DAYS = 14
