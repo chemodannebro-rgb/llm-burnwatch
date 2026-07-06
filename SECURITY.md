@@ -100,3 +100,79 @@ records. This is the same trust level as the log file itself: if you don't
 trust everyone with write access to `--log-file`'s directory, you're
 already trusting them not to tamper with the log, and the follow-state file
 sitting alongside it carries no stronger guarantee.
+
+## `detect --follow` alert sinks trust boundary
+
+`detect --follow --webhook-url <url>` / `--slack-webhook-url <url>` /
+`--telegram-bot-token <token> --telegram-chat-id <id>` /
+`--exec-sink <command...>` (`src/llm_burnwatch/sinks/`) push each newly
+triggered alert to a destination *you* configure. None of them run
+implicitly, none run for one-shot `detect` (only `--follow`), and a failure
+in one sink (`sinks.protocol.send_to_all`) is caught, reported via `warn()`,
+and never stops the poll loop or the other configured sinks.
+
+**`WebhookSink`/`SlackSink`** (`webhook_sink.py`/`slack_sink.py`): an HTTP(S)
+POST of the alert (JSON, or a Slack-compatible `{"text": ...}` payload) to
+the URL you supply, using the same `urllib.request` + fixed 10s timeout
+discipline as `pricing import <url>`, including the same rejection of any
+non-`http(s)://` URL scheme (`file://`, etc.) at construction time, before
+any connection is attempted. The response body is never read (only
+`response.status` is inspected), so unlike `pricing import` there's no
+response-size cap to enforce -- nothing from the response is ever buffered.
+What you're trusting when you set this: the URL itself -- llm-burnwatch will
+send it every alert's full `evidence`/`message` payload, which can include
+`label`/model/cost data from your own log. Prefer the
+`LLM_BURNWATCH_WEBHOOK_URL`/`LLM_BURNWATCH_SLACK_WEBHOOK_URL` environment
+variables over the `--webhook-url`/`--slack-webhook-url` flags for a URL
+that embeds a secret token (e.g. a real Slack incoming-webhook URL), since
+command-line arguments are visible to other local users via `ps`.
+
+**`TelegramSink`** (`telegram_sink.py`) composes `WebhookSink` internally --
+it is not a fourth independent HTTP implementation, just a fixed
+`https://api.telegram.org/bot<token>/sendMessage` endpoint (the host is
+hard-coded by the sink, not caller-supplied, so there is no arbitrary URL/
+scheme to validate here) plus a plain-text message formatted exactly like
+`SlackSink`'s (`[severity] detector/kind: message`, no Markdown/HTML
+`parse_mode`, so there's no message-escaping logic that could be gotten
+wrong). What you're trusting: your bot token, embedded in that URL exactly
+like a real Slack incoming-webhook URL embeds its own secret -- a
+`SinkError` from a failed delivery includes the URL, so, like Slack, that
+error is only ever passed to local `warn()`, never sent anywhere else.
+Prefer `LLM_BURNWATCH_TELEGRAM_BOT_TOKEN`/`LLM_BURNWATCH_TELEGRAM_CHAT_ID`
+over `--telegram-bot-token`/`--telegram-chat-id` for the same `ps`-visibility
+reason as the webhook/Slack flags above.
+
+**`ExecSink`** (`exec_sink.py`) is the riskiest of the four: it runs a
+*local command you specify*, writing the alert JSON to its **stdin**. This
+is the sharpest trust boundary in this section, not a variant of the
+webhook risk above -- the concern isn't "data goes to a URL you chose",
+it's "a command runs locally with attacker-influenceable content in its
+input" (a log record's `label`/`extra` fields, which end up in `evidence`,
+are not necessarily written by you).
+
+The alert is deliberately passed via stdin rather than as an argv entry:
+`command` (the fixed argv you configured) never changes, but the alert
+JSON does, once per delivery, and process argv is visible to every other
+local user via `ps`/`/proc/<pid>/cmdline` -- stdin is not. This is the same
+"don't put a secret/variable payload where `ps` can see it" discipline
+applied to `--webhook-url`/`--slack-webhook-url` above, just for the
+payload instead of the destination.
+
+What protects against shell injection: `command` is always a list of argv
+strings (never a single shell string you type), and it is passed to
+`subprocess.run(..., shell=False)` with `shell=False` **hard-coded** in
+`ExecSink.send()` -- not a parameter you or a future caller can override.
+The alert JSON is never concatenated into `command` or into any string a
+shell re-parses; it is only ever written to the child process's stdin pipe.
+
+What this does **not** protect against: `shell=False` only guarantees *this
+process* doesn't hand your command line to a shell. If the command you
+configure is itself something that interprets its stdin as code/templates
+(e.g. `sh` reading a script from stdin, `python` with `-`, a script that
+does its own `eval`/templating on what it reads), that command can still
+execute content derived from the alert. Do not point `--exec-sink` at such
+a command; use one that treats its stdin as an opaque string (write it to a
+file, log it, pass it to a notification API that itself treats it as inert
+text). llm-burnwatch does not vet what the configured command does with the
+JSON it's handed -- that trust boundary is the same as any other local
+script you choose to run.

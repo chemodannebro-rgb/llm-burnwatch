@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from llm_burnwatch.cli import _detect_follow_poll, build_parser
+from llm_burnwatch import cli as cli_module
+from llm_burnwatch.cli import _build_sinks, _detect_follow_poll, _run_detect_follow, build_parser
 from llm_burnwatch.follow_state import load_follow_state, save_follow_state, state_path_for
+from llm_burnwatch.sinks.exec_sink import ExecSink
+from llm_burnwatch.sinks.slack_sink import SlackSink
+from llm_burnwatch.sinks.telegram_sink import TelegramSink
+from llm_burnwatch.sinks.webhook_sink import WebhookSink
 
 
 def _write_lines(path, records):
@@ -220,3 +226,210 @@ def test_detect_follow_poll_evicts_oldest_records_past_window_size(tmp_path):
     _append_lines(log_path, [{"seq": 3}])
     _, offsets, _ = _detect_follow_poll(log_path, offsets, window, args)
     assert [r["seq"] for r in window] == [2, 3]
+
+
+# --- cli._build_sinks --------------------------------------------------------
+
+
+def test_build_sinks_returns_empty_list_by_default(tmp_path):
+    args = _detect_args(tmp_path / "calls.jsonl")
+    assert _build_sinks(args) == []
+
+
+def test_build_sinks_builds_webhook_and_slack_and_telegram_and_exec_from_flags(tmp_path):
+    args = build_parser().parse_args(
+        [
+            "detect",
+            "--log-file",
+            str(tmp_path / "calls.jsonl"),
+            "--follow",
+            "--webhook-url",
+            "https://example.com/hook",
+            "--slack-webhook-url",
+            "https://hooks.slack.com/services/T/B/X",
+            "--telegram-bot-token",
+            "123:ABC-TOKEN",
+            "--telegram-chat-id",
+            "-100987654321",
+            "--exec-sink",
+            "some-command",
+            "some-arg",
+        ]
+    )
+    sinks = _build_sinks(args)
+    assert [type(s) for s in sinks] == [WebhookSink, SlackSink, TelegramSink, ExecSink]
+    assert sinks[0].url == "https://example.com/hook"
+    assert sinks[3].command == ["some-command", "some-arg"]
+
+
+def test_build_sinks_falls_back_to_env_vars_when_flags_not_given(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLM_BURNWATCH_WEBHOOK_URL", "https://example.com/env-hook")
+    monkeypatch.setenv("LLM_BURNWATCH_SLACK_WEBHOOK_URL", "https://hooks.slack.com/env")
+    monkeypatch.setenv("LLM_BURNWATCH_TELEGRAM_BOT_TOKEN", "123:ENV-TOKEN")
+    monkeypatch.setenv("LLM_BURNWATCH_TELEGRAM_CHAT_ID", "-100000000000")
+    args = _detect_args(tmp_path / "calls.jsonl")
+
+    sinks = _build_sinks(args)
+    assert [type(s) for s in sinks] == [WebhookSink, SlackSink, TelegramSink]
+    assert sinks[0].url == "https://example.com/env-hook"
+
+
+def test_build_sinks_explicit_flag_takes_priority_over_env_var(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLM_BURNWATCH_WEBHOOK_URL", "https://example.com/env-hook")
+    args = build_parser().parse_args(
+        [
+            "detect",
+            "--log-file",
+            str(tmp_path / "calls.jsonl"),
+            "--follow",
+            "--webhook-url",
+            "https://example.com/flag-hook",
+        ]
+    )
+
+    sinks = _build_sinks(args)
+    assert sinks[0].url == "https://example.com/flag-hook"
+
+
+def test_build_sinks_rejects_telegram_bot_token_without_chat_id(tmp_path):
+    args = build_parser().parse_args(
+        [
+            "detect",
+            "--log-file",
+            str(tmp_path / "calls.jsonl"),
+            "--follow",
+            "--telegram-bot-token",
+            "123:ABC-TOKEN",
+        ]
+    )
+    with pytest.raises(ValueError, match="bot token and a chat id"):
+        _build_sinks(args)
+
+
+def test_build_sinks_rejects_telegram_chat_id_without_bot_token(tmp_path):
+    args = build_parser().parse_args(
+        [
+            "detect",
+            "--log-file",
+            str(tmp_path / "calls.jsonl"),
+            "--follow",
+            "--telegram-chat-id",
+            "-100987654321",
+        ]
+    )
+    with pytest.raises(ValueError, match="bot token and a chat id"):
+        _build_sinks(args)
+
+
+# --- cli._run_detect_follow: sink wiring ------------------------------------
+
+
+def test_run_detect_follow_pushes_new_alerts_to_configured_exec_sink(tmp_path, monkeypatch):
+    log_path = tmp_path / "calls.jsonl"
+    _write_lines(log_path, [{"seq": 1, "cost_micros": 5_000_000}])
+
+    script = tmp_path / "capture.py"
+    # Appends (not overwrites) each invocation's alert JSON (read from
+    # stdin, not argv) as its own line -- this poll triggers two alerts for
+    # the same record (rules + baseline insufficient_data), so both are
+    # delivered to the sink.
+    script.write_text(
+        "import sys, pathlib\n"
+        "payload = sys.stdin.read()\n"
+        "with pathlib.Path(sys.argv[1]).open('a') as fh:\n"
+        "    fh.write(payload + chr(10))\n",
+        encoding="utf-8",
+    )
+    out_file = tmp_path / "out.txt"
+
+    argv = [
+        "detect",
+        "--log-file",
+        str(log_path),
+        "--max-call-cost",
+        "0.00005",
+        "--follow",
+        "--exec-sink",
+        sys.executable,
+        str(script),
+        str(out_file),
+    ]
+    args = build_parser().parse_args(argv)
+
+    monkeypatch.setattr(cli_module.time, "sleep", lambda seconds: (_ for _ in ()).throw(KeyboardInterrupt))
+
+    exit_code = _run_detect_follow(args)
+
+    assert exit_code == 0
+    payloads = [json.loads(line) for line in out_file.read_text().splitlines()]
+    assert any(p["kind"] == "call_cost_exceeded" for p in payloads)
+
+
+def test_run_detect_follow_sink_failure_does_not_crash_the_poll_loop(tmp_path, monkeypatch, capsys):
+    log_path = tmp_path / "calls.jsonl"
+    _write_lines(log_path, [{"seq": 1, "cost_micros": 5_000_000}])
+
+    argv = [
+        "detect",
+        "--log-file",
+        str(log_path),
+        "--max-call-cost",
+        "0.00005",
+        "--follow",
+        "--exec-sink",
+        "/no/such/command-llm-burnwatch-test",
+    ]
+    args = build_parser().parse_args(argv)
+
+    monkeypatch.setattr(cli_module.time, "sleep", lambda seconds: (_ for _ in ()).throw(KeyboardInterrupt))
+
+    exit_code = _run_detect_follow(args)
+
+    assert exit_code == 0
+    assert "sink 'exec' failed to deliver alert" in capsys.readouterr().err
+
+
+def test_run_detect_follow_with_no_sinks_configured_behaves_as_before(tmp_path, monkeypatch):
+    log_path = tmp_path / "calls.jsonl"
+    _write_lines(log_path, [{"seq": 1, "cost_micros": 5_000_000}])
+
+    argv = ["detect", "--log-file", str(log_path), "--max-call-cost", "0.00005", "--follow"]
+    args = build_parser().parse_args(argv)
+
+    monkeypatch.setattr(cli_module.time, "sleep", lambda seconds: (_ for _ in ()).throw(KeyboardInterrupt))
+
+    exit_code = _run_detect_follow(args)
+    assert exit_code == 0
+
+
+def test_run_detect_follow_with_no_sinks_opens_no_sockets_and_spawns_no_processes(
+    tmp_path, monkeypatch
+):
+    # Proof that the sinks feature is actually opt-in: with none of
+    # --webhook-url/--slack-webhook-url/--exec-sink configured, --follow must
+    # not open a single socket or spawn a single subprocess, even though a
+    # triggering alert is present. socket.socket/subprocess.Popen are the
+    # primitives urllib.request and subprocess.run both build on, so patching
+    # these two catches every sink implementation, not just today's three.
+    import socket
+    import subprocess
+
+    log_path = tmp_path / "calls.jsonl"
+    _write_lines(log_path, [{"seq": 1, "cost_micros": 5_000_000}])
+
+    def _no_sockets(*args, **kwargs):
+        raise AssertionError("a socket was opened with no sinks configured")
+
+    def _no_subprocess(*args, **kwargs):
+        raise AssertionError("a subprocess was spawned with no sinks configured")
+
+    monkeypatch.setattr(socket, "socket", _no_sockets)
+    monkeypatch.setattr(subprocess, "Popen", _no_subprocess)
+
+    argv = ["detect", "--log-file", str(log_path), "--max-call-cost", "0.00005", "--follow"]
+    args = build_parser().parse_args(argv)
+
+    monkeypatch.setattr(cli_module.time, "sleep", lambda seconds: (_ for _ in ()).throw(KeyboardInterrupt))
+
+    exit_code = _run_detect_follow(args)
+    assert exit_code == 0

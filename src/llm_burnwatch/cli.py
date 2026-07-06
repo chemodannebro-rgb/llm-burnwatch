@@ -17,8 +17,13 @@ none exists yet, `detect` runs baseline-only and never touches scikit-learn
 either. `train` imports `anomaly.train` (which imports scikit-learn at module
 level) lazily, inside a try/except, so the zero-dependency core guarantee
 holds for every other command even when scikit-learn is not installed.
-`pricing import <url>` is the sole, explicit, opt-in exception to the
-no-network-by-default rule -- see "Network boundaries" in ARCHITECTURE.md.
+`pricing import <url>` and `detect --follow`'s optional alert sinks
+(`--webhook-url`/`--slack-webhook-url`/`--telegram-bot-token`+
+`--telegram-chat-id`/`--exec-sink`) are the only explicit, opt-in exceptions
+to the no-network-by-default rule -- see "Network boundaries" in
+ARCHITECTURE.md. Sinks are never used by one-shot `detect` (without
+`--follow`) -- that already has `--json`/text output meant to be piped into
+your own script.
 
 Exit codes (a stable contract for cron/alerting integration -- the only
 integration surface llm-burnwatch offers; it never sends notifications itself):
@@ -73,6 +78,11 @@ from .logreader import (
     read_new_records,
 )
 from .pricing_import import PricingImportError, import_pricing
+from .sinks.exec_sink import ExecSink
+from .sinks.protocol import send_to_all
+from .sinks.slack_sink import SlackSink
+from .sinks.telegram_sink import TelegramSink
+from .sinks.webhook_sink import WebhookSink
 from .tracker import build_report, resolve_pricing, user_pricing_path
 
 DISCLAIMER = (
@@ -650,6 +660,44 @@ def _detect_follow_poll(
     return new_alerts, offsets, True
 
 
+def _build_sinks(args: argparse.Namespace) -> list:
+    """Build the list of alert sinks `--follow` pushes newly triggered
+    alerts to, from `--webhook-url`/`--slack-webhook-url`/
+    `--telegram-bot-token`+`--telegram-chat-id`/`--exec-sink`.
+    `--webhook-url`/`--slack-webhook-url`/`--telegram-bot-token` fall back to
+    the `LLM_BURNWATCH_WEBHOOK_URL`/`LLM_BURNWATCH_SLACK_WEBHOOK_URL`/
+    `LLM_BURNWATCH_TELEGRAM_BOT_TOKEN` environment variables when the flag
+    isn't given, so a secret doesn't have to appear in argv (and therefore
+    `ps` output). Returns `[]` -- the default -- when none are configured, in
+    which case `--follow` behaves exactly as it did before sinks existed.
+    """
+    sinks: list = []
+    webhook_url = args.webhook_url or os.environ.get("LLM_BURNWATCH_WEBHOOK_URL")
+    if webhook_url:
+        sinks.append(WebhookSink(webhook_url))
+    slack_webhook_url = args.slack_webhook_url or os.environ.get(
+        "LLM_BURNWATCH_SLACK_WEBHOOK_URL"
+    )
+    if slack_webhook_url:
+        sinks.append(SlackSink(slack_webhook_url))
+    telegram_bot_token = args.telegram_bot_token or os.environ.get(
+        "LLM_BURNWATCH_TELEGRAM_BOT_TOKEN"
+    )
+    telegram_chat_id = args.telegram_chat_id or os.environ.get("LLM_BURNWATCH_TELEGRAM_CHAT_ID")
+    if telegram_bot_token or telegram_chat_id:
+        if not (telegram_bot_token and telegram_chat_id):
+            raise ValueError(
+                "Telegram sink needs both a bot token and a chat id -- "
+                "give --telegram-bot-token/--telegram-chat-id (or "
+                "LLM_BURNWATCH_TELEGRAM_BOT_TOKEN/LLM_BURNWATCH_TELEGRAM_CHAT_ID) "
+                "together, not just one of them"
+            )
+        sinks.append(TelegramSink(telegram_bot_token, telegram_chat_id))
+    if args.exec_sink:
+        sinks.append(ExecSink(args.exec_sink))
+    return sinks
+
+
 def _print_follow_alert(a) -> None:
     print(
         json.dumps(
@@ -684,12 +732,19 @@ def _run_detect_follow(args: argparse.Namespace) -> int:
     `check_label_cardinality`'s log-wide cardinality warning (would repeat
     identically almost every poll). Runs until interrupted (Ctrl+C), then
     exits `0`.
+
+    If `--webhook-url`/`--slack-webhook-url`/`--telegram-bot-token`+
+    `--telegram-chat-id`/`--exec-sink` are given, each newly triggered alert
+    is also pushed to those sinks (see `_build_sinks`, `sinks/protocol.py`)
+    after being printed -- a sink failure is warned about and never stops the
+    poll loop or the other sinks.
     """
     log_path = Path(args.log_file)
     state_path = state_path_for(log_path)
     state = load_follow_state(state_path)
     window: deque = deque(state["window"], maxlen=FOLLOW_WINDOW_SIZE)
     offsets: dict[str, int] = state["offsets"]
+    sinks = _build_sinks(args)
 
     warn(
         f"following {log_path} every {args.poll_interval}s, "
@@ -705,6 +760,7 @@ def _run_detect_follow(args: argparse.Namespace) -> int:
             if new_alerts:
                 for a in new_alerts:
                     _print_follow_alert(a)
+                    send_to_all(sinks, a)
                 sys.stdout.flush()
             if had_new_records:
                 save_follow_state(state_path, {"offsets": offsets, "window": list(window)})
@@ -1016,6 +1072,60 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_float,
         default=5.0,
         help="Seconds between polls in --follow mode (default: 5.0)",
+    )
+    detect_p.add_argument(
+        "--webhook-url",
+        default=None,
+        help=(
+            "--follow only: POST each newly triggered alert as JSON to this URL. "
+            "Falls back to the LLM_BURNWATCH_WEBHOOK_URL environment variable if "
+            "not given, so a secret URL doesn't have to appear in argv/`ps` output. "
+            "A sink failure is warned about and never stops --follow or other sinks."
+        ),
+    )
+    detect_p.add_argument(
+        "--slack-webhook-url",
+        default=None,
+        help=(
+            "--follow only: POST each newly triggered alert to this Slack "
+            "incoming-webhook URL. Falls back to LLM_BURNWATCH_SLACK_WEBHOOK_URL "
+            "if not given."
+        ),
+    )
+    detect_p.add_argument(
+        "--telegram-bot-token",
+        default=None,
+        help=(
+            "--follow only: send each newly triggered alert as a plain-text "
+            "message via this Telegram bot's Bot API token. Falls back to "
+            "LLM_BURNWATCH_TELEGRAM_BOT_TOKEN if not given, so the token doesn't "
+            "have to appear in argv/`ps` output. Requires --telegram-chat-id "
+            "(or LLM_BURNWATCH_TELEGRAM_CHAT_ID) to also be given."
+        ),
+    )
+    detect_p.add_argument(
+        "--telegram-chat-id",
+        default=None,
+        help=(
+            "--follow only: chat id the Telegram bot sends alert messages to. "
+            "Falls back to LLM_BURNWATCH_TELEGRAM_CHAT_ID if not given. Requires "
+            "--telegram-bot-token (or LLM_BURNWATCH_TELEGRAM_BOT_TOKEN) to also "
+            "be given."
+        ),
+    )
+    detect_p.add_argument(
+        "--exec-sink",
+        nargs="+",
+        default=None,
+        metavar="COMMAND",
+        help=(
+            "--follow only: run this command (an argv list, never a shell string) "
+            "for each newly triggered alert, with the alert JSON written to its "
+            "stdin (not passed as an argument, since argv -- unlike stdin -- is "
+            "visible to other local users via ps/`/proc/<pid>/cmdline`). Runs "
+            "with shell=False; do not use a command that itself interprets its "
+            "stdin as shell/template code."
+        ),
     )
     detect_p.set_defaults(handler=cmd_detect)
 

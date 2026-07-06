@@ -50,17 +50,43 @@ CrewAI/AutoGen adapter extra):
 ## Network boundaries
 
 The core (see table above) never opens a socket — enforced by
-`test_core_commands_make_no_network_attempts`. As of v0.7.0 there is
-exactly one explicit, opt-in exception:
+`test_core_commands_make_no_network_attempts`. As of v0.9.1 there are two
+explicit, opt-in exceptions:
 
 | Command | Network access | Why it's safe to be an exception |
 |---|---|---|
 | `pricing import <url>` | Fetches a pricing JSON file over `http(s)://` when given a URL (a local file path does not touch the network) | Explicit, one-shot, user-initiated; prints a `warn()` before fetching; not on any path reachable from `report`/`detect`/`dashboard`/`train`/`demo-data`/`validate`/`schema` |
+| `detect --follow --webhook-url`/`--slack-webhook-url` | POSTs each newly triggered alert as JSON (or a Slack-compatible payload) to a URL the caller supplies | Only runs when the caller passes one of these flags (or the matching `LLM_BURNWATCH_*_URL` env var) *and* `--follow`; one-shot `detect` never touches it. A delivery failure is caught by `sinks.protocol.send_to_all`, warned about, and never aborts the poll loop -- see SECURITY.md's "Alert sinks" section |
+| `detect --follow --telegram-bot-token`+`--telegram-chat-id` | POSTs each newly triggered alert as a plain-text message to the Telegram Bot API (`api.telegram.org`, host fixed by the sink, not caller-supplied) | Same opt-in/failure-isolation properties as the webhook/Slack row -- only runs when *both* flags (or both matching `LLM_BURNWATCH_TELEGRAM_*` env vars) *and* `--follow` are given; internally composes `WebhookSink`, so it's the same HTTP code path, not a new one |
+
+`detect --follow --exec-sink <command...>` is a related opt-in exception
+that runs a *local command* (never a network call) for each newly triggered
+alert -- see SECURITY.md for its specific threat model (`shell=False` is
+hard-coded, not configurable).
+
+Alert sinks (`sinks/` -- `WebhookSink`/`SlackSink`/`TelegramSink`/`ExecSink`)
+need **zero** third-party packages (`urllib.request`/`subprocess`, both
+stdlib), so unlike `[anomaly]` they are not gated behind a new pip extra -- there would be
+nothing for such an extra to add. They follow the exact precedent already
+set by `pricing import <url>` above: an opt-in *network/process* boundary,
+documented in this table and in SECURITY.md, gated by explicit CLI flags
+(or env vars for secrets) rather than by what's installed. See
+`CHANGELOG.md`'s `[0.9.1]` entry for why this corrects an earlier
+(`[0.8.0]`) plan to ship sinks behind a `[alerts]` extra.
 
 Any future command that needs network access must be added to this table
 and to `test_core_commands_make_no_network_attempts`'s command list (so the
 no-network guarantee stays an enforced fact about the core, not just a
-claim about the whole CLI).
+claim about the whole CLI). `detect --follow` itself is already excluded
+from that test (it's a long-running poll loop, not a single invocation);
+sinks add no new exception to that exclusion. Since that test can't cover
+`--follow`, the equivalent guarantee for it is checked separately by
+`test_run_detect_follow_with_no_sinks_opens_no_sockets_and_spawns_no_processes`
+(`tests/test_detect_follow.py`), which patches `socket.socket` **and**
+`subprocess.Popen` (covering both the network and process-spawning axes,
+since `--exec-sink` is a process exception, not a network one) and asserts
+neither is touched when no sink flags are given, even with a triggering
+alert present.
 
 ## Why this rule, not just "keep deps low"
 

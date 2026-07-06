@@ -2,6 +2,90 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.1] - 2026-07-06
+
+### Added
+- `llm_burnwatch.sinks`: a new internal package giving `detect --follow` a
+  way to push a newly triggered alert to a destination you configure,
+  instead of only printing it. `sinks.protocol.Sink` is a one-method
+  protocol (`send(alert) -> None`); `sinks.protocol.send_to_all()` is the
+  single place that calls every configured sink for a given alert and
+  catches *any* exception a sink raises, reporting it via `warn()` instead
+  of letting it crash the poll loop or stop the remaining sinks -- the same
+  graceful-degradation discipline already used for the ML cross-check and
+  the follow-state file.
+  - `sinks.webhook_sink.WebhookSink(url)`: POSTs the alert as JSON to `url`
+    over `urllib.request`, reusing the same fixed-10s-timeout discipline
+    (and the same rejection of any non-`http(s)://` scheme, at construction
+    time) as `pricing import <url>`. The response body is never read (only
+    `response.status` is inspected), so there's no equivalent to
+    `pricing_import`'s response-size cap to enforce.
+  - `sinks.slack_sink.SlackSink(webhook_url)`: composes `WebhookSink`'s
+    POST logic (no duplicated HTTP handling, and inherits its scheme
+    validation) to send a Slack-compatible `{"text": ...}` payload instead
+    of the raw alert JSON.
+  - `sinks.telegram_sink.TelegramSink(bot_token, chat_id)`: also composes
+    `WebhookSink`, POSTing to the fixed `https://api.telegram.org/bot<token>/
+    sendMessage` endpoint (the host is hard-coded by the sink itself, not
+    caller-supplied, so there's no arbitrary scheme to validate here) with
+    the same plain-text format `SlackSink` uses
+    (`[severity] detector/kind: message`) rather than Telegram's Markdown/
+    HTML `parse_mode`, deliberately avoiding MarkdownV2's escaping rules for
+    a notification line.
+  - `sinks.exec_sink.ExecSink(command)`: runs a local command (an argv
+    list, never a shell string) with the alert JSON written to its
+    **stdin** -- deliberately not appended to argv, since process argv
+    (unlike stdin) is visible to every other local user via
+    `ps`/`/proc/<pid>/cmdline`, the same reasoning behind preferring
+    `LLM_BURNWATCH_WEBHOOK_URL` over `--webhook-url` for a secret-bearing
+    URL, just applied to the payload instead of the destination.
+    `subprocess.run(..., shell=False)` is hard-coded, not a configurable
+    option, so alert content (which can include user-supplied `label`/
+    `extra` text carried through from the log) can never be interpreted as
+    shell syntax by this sink itself -- see `SECURITY.md`'s new "alert
+    sinks trust boundary" section for what this does and does **not**
+    protect against (a command that itself reinterprets its stdin, e.g.
+    `sh`, is out of scope).
+- `detect --follow` gained five new flags, wired in `_build_sinks()`
+  (`cli.py`): `--webhook-url`, `--slack-webhook-url`, `--telegram-bot-token`
+  + `--telegram-chat-id` (each falling back to the
+  `LLM_BURNWATCH_WEBHOOK_URL`/`LLM_BURNWATCH_SLACK_WEBHOOK_URL`/
+  `LLM_BURNWATCH_TELEGRAM_BOT_TOKEN`/`LLM_BURNWATCH_TELEGRAM_CHAT_ID`
+  environment variable when the flag isn't given, so a secret-bearing
+  value doesn't have to appear in argv/`ps` output), and
+  `--exec-sink COMMAND...`. The two Telegram flags must be given together
+  (both flags/env vars, or neither) -- `_build_sinks()` raises `ValueError`
+  if only one is set. None of these do anything unless explicitly
+  configured, and none apply to one-shot `detect` -- only `--follow`, where
+  an alert "happens once" and a push notification is meaningful. Proven,
+  not just claimed:
+  `test_run_detect_follow_with_no_sinks_opens_no_sockets_and_spawns_no_processes`
+  (`tests/test_detect_follow.py`) patches both `socket.socket` and
+  `subprocess.Popen` and asserts neither is touched by `--follow` when no
+  sink flags are given, even with a triggering alert present --
+  `test_core_commands_make_no_network_attempts` can't cover this itself,
+  since it already excludes `--follow` as a long-running poll loop.
+
+### Fixed
+- **Corrected this project's own stated plan for how sinks would ship.**
+  The `[0.8.0]` entry above (and README's "System boundaries"/"When NOT to
+  use" sections, before this entry) committed to v0.9 shipping webhook/Slack
+  sinks "behind an opt-in `[alerts]` extra," parallel to `[anomaly]`. That
+  turned out not to fit `ARCHITECTURE.md`'s own rule for *why* extras exist
+  once actually implemented: extras gate **third-party packages** (`[anomaly]`
+  gates scikit-learn/skops), and all four sinks need zero third-party
+  packages -- `urllib.request` and `subprocess` are both stdlib. A new
+  `[alerts]` extra would therefore have nothing to add; it would be a
+  pip-installable no-op. Sinks instead follow the precedent already set by
+  `pricing import <url>`: an opt-in **network/process boundary** -- gated by
+  explicit CLI flags (or env vars for secrets), not by what's installed --
+  documented as a new row in `ARCHITECTURE.md`'s "Network boundaries" table
+  and a new section in `SECURITY.md`, exactly like `pricing import` already
+  is. `test_core_commands_make_no_network_attempts` is unaffected: sinks
+  only ever run from `detect --follow`, which that test already excludes
+  (it's a long-running poll loop, not a single invocation) for the same
+  reason `pricing import` needed no exception carved into it either.
+
 ## [0.8.0] - 2026-07-06
 
 ### Added
