@@ -2,10 +2,83 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.7.0] - 2026-07-05
+
+### Changed
+- **Project renamed from `llmledger` to `llm-burnwatch`** (PyPI/CLI name
+  `llm-burnwatch`, importable package `llm_burnwatch`) ahead of the first
+  PyPI publish — `burnwatch` was already taken by an unrelated project.
+  Every user-facing surface moved together: the console script
+  (`llmledger` → `llm-burnwatch`), the import path
+  (`from llmledger... import` → `from llm_burnwatch... import`), the XDG
+  config directory (`~/.config/llmledger/` →
+  `~/.config/llm-burnwatch/`), and all GitHub/PyPI URLs in
+  `pyproject.toml`. No compatibility shim or deprecated alias is provided
+  for the old name — the package has not been published under the old
+  name yet, so there are no existing installs to carry forward.
+
+### Added
+- `llm-burnwatch pricing import <file|url>`: imports pricing from a local file
+  or an `http(s)://` URL in LiteLLM's `model_prices_and_context_window.json`
+  format, saved to `~/.config/llm-burnwatch/pricing.json`
+  (`$XDG_CONFIG_HOME/llm-burnwatch/pricing.json` if set). This is the only
+  network access point outside the zero-dependency core (10 second
+  timeout, 10 MB response cap, `http(s)://`-only scheme allowlist, strict
+  JSON parsing that rejects `Infinity`/`NaN`, atomic write) — see
+  "Network boundaries" in `ARCHITECTURE.md` and the new trust-boundary
+  section in `SECURITY.md`. `report`/`dashboard`/`detect` now resolve
+  pricing in priority order: explicit `--pricing-file` > this user config
+  file > the packaged default; `detect` previously had no `--pricing-file`
+  flag at all and always used the packaged default.
+- `--fx-rate <rate> --currency <code>` on `report`/`dashboard`, replacing
+  the RUB-only `--rub-rate <rate>`. `--rub-rate` still works as a
+  deprecated alias for `--fx-rate <rate> --currency RUB` (prints a
+  `warn()`) and will be removed before v1.0.
+- `python -m llm_burnwatch.cli` now runs the CLI (`__main__` guard), instead
+  of silently doing nothing.
+- `.github/workflows/release.yml`: publishes to PyPI via trusted
+  publishing (OIDC) on `v*` tags — no long-lived API token stored in the
+  repository. CI's Python version matrix extended from `3.9`/`3.12` to
+  `3.9`–`3.13`.
+- `README.md`: a real dashboard screenshot (`docs/dashboard.png`,
+  generated from `demo-data` + `dashboard`), a "When NOT to use
+  llm-burnwatch" section (points to Langfuse for traces/evals, LiteLLM for a
+  proxy), and `pip install llm-burnwatch` as the primary install path now
+  that the package is published.
+
+### Changed
+- README's opening note now leads with "Early stage — API may change
+  before v1.0" ahead of the existing portfolio/demo-project disclaimer,
+  and its "System boundaries" section now accurately describes
+  `pricing import <url>` as the one explicit network exception (it
+  previously claimed llm-burnwatch never makes a network call at all).
+- `CONTRIBUTING.md`'s security section no longer claims there's a private
+  vulnerability-disclosure channel — `SECURITY.md` has never had one; all
+  reports go through public GitHub issues.
+
+### Fixed
+- `llm-burnwatch train` (the `[anomaly]` extra): a missing `skops` install
+  (with `scikit-learn` present) surfaced as a generic "unexpected error"
+  instead of the intended `pip install "llm-burnwatch[anomaly]"` message,
+  because `cmd_train`'s `except ImportError` only wrapped the `import` of
+  `anomaly.train` itself, not the later call to `train()` — where `skops`
+  is actually imported lazily, inside `registry.save_model()`. Both call
+  sites are now covered by the same handler.
+
+### Removed
+- `BACKLOG.md`/`BACKLOG_REVIEW.md` (internal planning drafts, deleted
+  outright — no longer needed once `TEAM.md` became the canonical team
+  reference) and the example `models/v1/` registry (`model.skops` +
+  `metadata.json`, untracked via `git rm --cached` but left on disk
+  locally) are no longer tracked in git. The model registry is trivially
+  regenerated via `demo-data` + `train`, and a committed model binary was
+  already flagged in `SECURITY.md` as a weak trust boundary for a public
+  repository.
+
 ## [0.6.0] - 2026-07-05
 
 ### Added
-- `llmledger validate --log-file <path> [--json]`: checks every record
+- `llm-burnwatch validate --log-file <path> [--json]`: checks every record
   against the packaged `schema.json` (required fields, types including
   `["string", "null"]` unions, `minLength`, `minimum`,
   `additionalProperties: false`). Implemented as a small, dependency-free
@@ -123,7 +196,7 @@ All notable changes to this project are documented in this file.
   that day's own by-label/by-model breakdown.
 - `--since`/`--until` (`YYYY-MM-DD`, inclusive) on both `report` and
   `dashboard`, filtering by the record's UTC calendar date
-  (`llmledger.logreader.filter_by_period`). The dashboard header shows
+  (`llm_burnwatch.logreader.filter_by_period`). The dashboard header shows
   the active period ("Period: all time" if neither is given).
 - `SECURITY.md`: model registry trust boundary and vulnerability
   reporting process.
@@ -177,11 +250,11 @@ All notable changes to this project are documented in this file.
   history of the same `(label, model)` pair — no third-party
   dependencies required.
 - Optional ML cross-check: `IsolationForest` on group-relative
-  features (`llmledger[anomaly]` extra), plus training-time vs.
+  features (`llm-burnwatch[anomaly]` extra), plus training-time vs.
   current per-group statistics drift detection.
 - Versioned, SHA256-verified model registry (`models/vN/`); a working
   example registry committed at `models/v1/`.
 - CLI: `report`, `demo-data`, `detect`, `train`, `schema`.
-- JSONL log schema contract (`schema.json`, `llmledger schema`).
+- JSONL log schema contract (`schema.json`, `llm-burnwatch schema`).
 - CI (GitHub Actions): core-only smoke test + full test matrix
   (Python 3.9 & 3.12) with `[anomaly,dev]` extras, plus `pip-audit`.

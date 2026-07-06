@@ -1,0 +1,78 @@
+name: Release
+
+# Fires only on version tags (v0.7.0, v1.2.3, ...). Tagging is a manual,
+# deliberate act by a maintainer -- this workflow never runs on a plain
+# push to a branch.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build wheel + sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Verify built version matches the pushed tag
+        # Guards against "forgot to bump __version__/pyproject before
+        # tagging" -- fails loudly instead of publishing a mismatched
+        # release to PyPI (which cannot be overwritten/deleted after
+        # the fact for a given version).
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(python -c 'import importlib.metadata as m; print(m.version("llm-burnwatch"))' 2>/dev/null || true)"
+          if [ -z "$PKG_VERSION" ]; then
+            PKG_VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          fi
+          echo "tag=$TAG_VERSION pyproject=$PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION does not match pyproject.toml version $PKG_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Check distributions with twine
+        run: |
+          python -m pip install --upgrade twine
+          twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Requires a Trusted Publisher configured on pypi.org for this repo +
+    # workflow filename (release.yml) + this environment name (pypi).
+    # No API token secret is used or needed -- PyPI exchanges the OIDC
+    # token minted below for a short-lived upload credential.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/llm-burnwatch
+    permissions:
+      id-token: write  # mandatory for OIDC trusted publishing
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
