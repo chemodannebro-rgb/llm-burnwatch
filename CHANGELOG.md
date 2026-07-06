@@ -159,6 +159,25 @@ All notable changes to this project are documented in this file.
     ML cross-check (reloads a model from disk, too expensive every poll) and
     the log-wide label-cardinality warning (would repeat almost identically
     every poll).
+- `alert_schema_version` (v0.8.6): one-shot `detect --json` output now
+  includes a top-level `"alert_schema_version": 1` key
+  (`detectors.protocol.ALERT_SCHEMA_VERSION`, already introduced in v0.8.0's
+  architectural foundation but not previously surfaced in any output),
+  mirroring how `schema.json`/`schema_version` already version the input log
+  format. This is the **only** change to `detect`'s public JSON contract
+  across the whole v0.8 milestone -- every other v0.8.1-0.8.5 sub-task
+  deliberately left the existing `--json`/text output untouched so this
+  would be a single, isolated, easy-to-describe versioning change. All
+  pre-existing keys (`call_count`, `anomaly_count`, `anomalies`, `ml`, etc.)
+  are unchanged; `alert_schema_version` is purely additive. New file
+  `src/llm_burnwatch/alert_schema.json` documents this output shape, by
+  analogy with the existing `schema.json` for the input log format (added
+  to `package-data` alongside it). `detect --follow`'s separate,
+  newline-delimited streaming format (v0.8.5) is unaffected -- it isn't
+  wrapped in this key, since it's a distinct, already-documented contract.
+  A dedicated `validate --alerts` command analogous to the existing
+  `validate` (which checks input records against `schema.json`) is a
+  reasonable future addition but out of scope for this change.
 
 ## [0.7.0] - 2026-07-05
 

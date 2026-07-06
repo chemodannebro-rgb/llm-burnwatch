@@ -61,6 +61,7 @@ from .demo_data import DEFAULT_SEED, write_demo_log
 from .detectors.baseline_detector import BaselineDetector
 from .detectors.engine import run_detectors
 from .detectors.frequency_detector import FrequencyDetector
+from .detectors.protocol import ALERT_SCHEMA_VERSION
 from .detectors.rules_detector import RulesDetector
 from .follow_state import load_follow_state, save_follow_state, state_path_for
 from .logreader import (
@@ -440,7 +441,17 @@ def cmd_detect(args: argparse.Namespace) -> int:
 
     if not records:
         if args.json:
-            print(json.dumps({"call_count": 0, "anomaly_count": 0, "anomalies": []}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "alert_schema_version": ALERT_SCHEMA_VERSION,
+                        "call_count": 0,
+                        "anomaly_count": 0,
+                        "anomalies": [],
+                    },
+                    indent=2,
+                )
+            )
         else:
             _print_header(pricing)
             print("no records found in log; nothing to analyze")
@@ -476,6 +487,7 @@ def cmd_detect(args: argparse.Namespace) -> int:
 
     if args.json:
         payload = {
+            "alert_schema_version": ALERT_SCHEMA_VERSION,
             "call_count": len(records),
             "threshold": args.threshold,
             "anomaly_count": len(anomalous),

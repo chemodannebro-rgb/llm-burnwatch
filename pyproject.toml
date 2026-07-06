@@ -38,7 +38,7 @@ llm-burnwatch = "llm_burnwatch.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-llm_burnwatch = ["pricing.json", "schema.json"]
+llm_burnwatch = ["pricing.json", "schema.json", "alert_schema.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

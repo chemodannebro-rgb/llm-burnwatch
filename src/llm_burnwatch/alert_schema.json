@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chemodannebro-rgb/llm-burnwatch/alert_schema.json",
+  "title": "llm-burnwatch detect --json output",
+  "description": "The shape of `llm-burnwatch detect --json`'s one-shot output (not `detect --follow`, which streams a distinct, separately-documented newline-delimited format instead). `alert_schema_version` is bumped whenever this shape changes in a way existing consumers should know about -- see `detectors.protocol.ALERT_SCHEMA_VERSION`, the single source of truth this file's `alert_schema_version` const mirrors. When the input log has zero records, `detect --json` prints a minimal object with only `alert_schema_version`/`call_count`/`anomaly_count`/`anomalies` -- every other property below is therefore optional at the schema level, even though a non-empty log always produces all of them together.",
+  "type": "object",
+  "required": ["alert_schema_version", "call_count", "anomaly_count", "anomalies"],
+  "properties": {
+    "alert_schema_version": {
+      "const": 1,
+      "description": "Version of this output shape. Bumped on breaking changes only; purely additive keys do not bump it."
+    },
+    "call_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of log records analyzed."
+    },
+    "threshold": {
+      "type": "number",
+      "description": "Modified z-score threshold used by the baseline detector for this run (`--threshold`)."
+    },
+    "anomaly_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of calls flagged by the baseline z-score detector."
+    },
+    "insufficient_data_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of calls skipped because their (label, model) group didn't yet have enough history for a baseline comparison."
+    },
+    "anomalies": {
+      "type": "array",
+      "description": "Baseline z-score findings.",
+      "items": {
+        "type": "object",
+        "required": ["index", "label", "model", "timestamp", "features"],
+        "properties": {
+          "index": {"type": "integer", "minimum": 0, "description": "Index of the record in the input log."},
+          "label": {"type": ["string", "null"]},
+          "model": {"type": ["string", "null"]},
+          "timestamp": {"type": ["string", "null"]},
+          "features": {
+            "type": "array",
+            "description": "Per-feature z-score explanations, e.g. output_tokens/cost_micros.",
+            "items": {"type": "object"}
+          }
+        }
+      }
+    },
+    "rule_violation_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of hard-limit violations from RulesDetector (--allowed-models/--max-call-cost/--max-trace-cost)."
+    },
+    "rule_violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "kind", "message", "evidence"],
+        "properties": {
+          "index": {"type": ["integer", "null"]},
+          "kind": {
+            "type": "string",
+            "enum": ["model_not_allowed", "call_cost_exceeded", "trace_cost_exceeded"]
+          },
+          "message": {"type": "string"},
+          "evidence": {"type": "object"}
+        }
+      }
+    },
+    "seasonal_baseline": {
+      "type": "object",
+      "required": ["available", "message"],
+      "properties": {
+        "available": {"type": "boolean", "description": "Whether this log has enough calendar span (>= MIN_SEASONAL_SPAN_DAYS) for a day-of-week x hour-of-day comparison."},
+        "message": {"type": "string"}
+      }
+    },
+    "frequency_detector_enabled": {
+      "type": "boolean",
+      "description": "Whether FrequencyDetector actually ran for this call, after applying --frequency-detector auto/on/off."
+    },
+    "frequency_spike_count": {"type": "integer", "minimum": 0},
+    "frequency_spikes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "group_key", "message", "evidence"],
+        "properties": {
+          "index": {"type": ["integer", "null"]},
+          "group_key": {"type": "array"},
+          "message": {"type": "string"},
+          "evidence": {"type": "object"}
+        }
+      }
+    },
+    "ml": {
+      "description": "ML cross-check summary, or null if no trained model exists yet at --model-dir.",
+      "type": ["object", "null"],
+      "required": ["available"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "reason": {"type": "string", "description": "Present when available=false: why the ML cross-check couldn't run (e.g. scikit-learn missing, tampered/corrupted model registry)."},
+        "model_version": {"type": "integer", "description": "Present when available=true."},
+        "anomaly_count": {"type": "integer", "description": "Present when available=true."},
+        "anomaly_indices": {"type": "array", "items": {"type": "integer"}, "description": "Present when available=true."},
+        "drift_warnings": {"type": "array", "items": {"type": "string"}, "description": "Present when available=true."}
+      }
+    }
+  },
+  "additionalProperties": false
+}

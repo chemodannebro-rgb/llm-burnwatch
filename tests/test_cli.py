@@ -426,6 +426,7 @@ def test_detect_command_json_output_is_valid_json_with_expected_keys(tmp_path, c
     payload = json.loads(captured.out)
 
     assert exit_code == 1
+    assert payload["alert_schema_version"] == 1
     assert payload["call_count"] == 210
     assert payload["anomaly_count"] >= 10
     assert "anomalies" in payload
