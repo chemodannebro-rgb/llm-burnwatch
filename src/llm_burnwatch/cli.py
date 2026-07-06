@@ -742,7 +742,12 @@ def build_parser() -> argparse.ArgumentParser:
         "takes priority over the packaged pricing.json for report/dashboard/detect",
     )
     pricing_import_p.add_argument(
-        "source", help="Local file path or http(s):// URL to import pricing from"
+        "source",
+        help="Local file path or http(s):// URL to import pricing from, e.g. "
+        "LiteLLM's community-maintained "
+        "https://raw.githubusercontent.com/BerriAI/litellm/main/"
+        "model_prices_and_context_window.json (third-party source -- only "
+        "import from a URL you trust, see SECURITY.md)",
     )
     pricing_import_p.set_defaults(handler=cmd_pricing_import)
 

@@ -146,6 +146,13 @@ local file path never touches the network) — see
 what that does and doesn't protect against, and only import from a source
 you trust.
 
+Don't have a pricing file handy? LiteLLM maintains a community-updated one
+in this exact format at
+[`model_prices_and_context_window.json`](https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json)
+— that's a third-party file llm-burnwatch has no control over, so treat it
+like any other import source: `llm-burnwatch pricing import
+https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`.
+
 `--fx-rate`/`--currency` never fetches an exchange rate over the network —
 you supply the rate yourself, e.g. `llm-burnwatch report --log-file calls.jsonl
 --fx-rate 90 --currency RUB`. The older `--rub-rate <rate>` flag still works
