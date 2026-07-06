@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+- `llm_burnwatch.detectors`: a new internal package laying the architectural
+  foundation for the v0.8 "Detection Engine 2.0" milestone (frequency, CUSUM,
+  and rule-based detectors to follow). `detectors.protocol.Detector` is a
+  single-method protocol, `analyze(records) -> list[Alert]` — deliberately
+  not the `feed`/`finalize` streaming split originally sketched for this
+  milestone, since the planned `detect --follow` will re-run detectors over
+  a small fixed-size window per poll rather than accumulate incremental
+  state, so a streaming API would add complexity with no matching benefit.
+  `detectors.engine.run_detectors()` orchestrates a registry of detectors,
+  supports per-detector `enabled_overrides`, and merges/sorts their alerts.
+  `detectors.baseline_detector.BaselineDetector` wraps the existing
+  `anomaly.baseline.analyze()` as the first (and, for now, only) registered
+  detector, without changing any baseline detection logic.
+- `detect`'s internals now route through `detectors.engine.run_detectors()`
+  instead of calling `anomaly.baseline.analyze()` directly. Its `--json` and
+  text output are unchanged — this is purely an internal refactor.
+
 ## [0.7.0] - 2026-07-05
 
 > **Known gap (tech debt):** `.github/workflows/release.yml` publishes to

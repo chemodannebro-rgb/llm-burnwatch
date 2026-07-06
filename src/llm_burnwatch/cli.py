@@ -40,7 +40,6 @@ from typing import Iterator
 
 from . import __version__
 from ._messages import error, warn
-from .anomaly.baseline import analyze, format_score
 from .anomaly.constants import CONTAMINATION, KEEP_LAST_DEFAULT, Z_SCORE_THRESHOLD
 from .anomaly.features import (
     check_label_cardinality,
@@ -51,6 +50,8 @@ from .anomaly.features import (
 from .anomaly.registry import latest_version_dir, load_model
 from .dashboard import render_dashboard
 from .demo_data import DEFAULT_SEED, write_demo_log
+from .detectors.baseline_detector import BaselineDetector
+from .detectors.engine import run_detectors
 from .logreader import check_scale, filter_by_period, iter_log_records, parse_date
 from .pricing_import import PricingImportError, import_pricing
 from .tracker import build_report, resolve_pricing, user_pricing_path
@@ -394,15 +395,10 @@ def cmd_detect(args: argparse.Namespace) -> int:
         return 0
 
     check_label_cardinality(records)
-    analyses = analyze(records, threshold=args.threshold)
+    alerts = run_detectors(records, registry=[BaselineDetector(threshold=args.threshold)])
 
-    anomalous = []
-    insufficient_count = 0
-    for i, a in enumerate(analyses):
-        if a.status == "insufficient_data":
-            insufficient_count += 1
-        elif a.status == "anomaly":
-            anomalous.append((i, a))
+    anomalous = [(a.record_ref, a) for a in alerts if a.kind == "zscore_outlier"]
+    insufficient_count = sum(1 for a in alerts if a.kind == "insufficient_data")
 
     ml_info = _run_ml_cross_check(records, args.model_dir)
 
@@ -415,26 +411,14 @@ def cmd_detect(args: argparse.Namespace) -> int:
             "anomalies": [
                 {
                     "index": i,
-                    "label": a.record.get("label"),
-                    "model": a.record.get("model"),
-                    "timestamp": a.record.get("timestamp"),
-                    "features": [
-                        {
-                            "feature": s.feature,
-                            "value": s.value,
-                            "median": s.median,
-                            "mad": s.mad,
-                            "z_score": s.z_score,
-                            "is_extreme": s.is_extreme,
-                            # Same human-readable explanation `detect`'s
-                            # non-JSON output prints via `format_score()`,
-                            # so a JSON consumer doesn't have to recompute
-                            # it from the raw numbers above.
-                            "reason": format_score(s),
-                        }
-                        for s in a.scores
-                        if s.is_anomalous
-                    ],
+                    "label": records[i].get("label"),
+                    "model": records[i].get("model"),
+                    "timestamp": records[i].get("timestamp"),
+                    # Same human-readable explanation `detect`'s non-JSON
+                    # output prints, already computed by the detector so a
+                    # JSON consumer doesn't have to recompute it from raw
+                    # numbers.
+                    "features": a.evidence["scores"],
                 }
                 for i, a in anomalous
             ],
@@ -449,10 +433,10 @@ def cmd_detect(args: argparse.Namespace) -> int:
         if not anomalous:
             print("no anomalies found")
         for i, a in anomalous:
-            print(f"- [{i}] {a.record.get('label')} / {a.record.get('model')} @ {a.record.get('timestamp')}")
-            for s in a.scores:
-                if s.is_anomalous:
-                    print(f"    {format_score(s)}")
+            r = records[i]
+            print(f"- [{i}] {r.get('label')} / {r.get('model')} @ {r.get('timestamp')}")
+            for s in a.evidence["scores"]:
+                print(f"    {s['reason']}")
         if ml_info is not None and ml_info.get("available"):
             print(
                 f"ML cross-check (model v{ml_info['model_version']}): "
