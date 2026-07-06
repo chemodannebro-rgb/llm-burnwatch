@@ -129,7 +129,7 @@ pip install -e ".[anomaly]"            # + train (IsolationForest, requires scik
 |---|---|---|
 | `llm-burnwatch report --log-file <path> [--fx-rate <rate> --currency <code>] [--since <date>] [--until <date>] [--trace-id <id>] [--json \| --format csv]` | Cost summary (total, by label, by model); `--fx-rate`/`--currency` also shows the total converted to that currency at a fixed, manually-supplied rate; `--trace-id` narrows to one request's calls; `--json` prints a machine-readable summary, `--format csv` prints a normalized 3-column CSV (`dimension,key,cost_usd`) instead — the two are mutually exclusive | `0` |
 | `llm-burnwatch demo-data --out <path>` | Write a synthetic log with known injected anomalies | `0` |
-| `llm-burnwatch detect --log-file <path> [--model-dir <dir>] [--json]` | Baseline (+ ML if a trained model exists) anomaly detection | `0` clean, `1` anomalies found, `2` error |
+| `llm-burnwatch detect --log-file <path> [--model-dir <dir>] [--json] [--follow [--poll-interval <secs>]]` | Baseline (+ ML if a trained model exists) anomaly detection; `--follow` streams newly triggered alerts instead of a one-shot report (see [below](#detect---follow)) | `0` clean, `1` anomalies found, `2` error |
 | `llm-burnwatch train --log-file <path> --model-dir <dir>` | Train an IsolationForest model (`[anomaly]` extra) | `0` / `2` error |
 | `llm-burnwatch schema` | Print the JSONL log schema (`schema.json`) | `0` |
 | `llm-burnwatch validate --log-file <path> [--json]` | Check every record against the packaged schema (required fields, types, `minLength`/`minimum`, no unexpected fields) — dependency-free, doesn't use `jsonschema` | `0` clean, `1` invalid records found, `2` error |
@@ -203,6 +203,47 @@ Two independent, complementary layers:
 Both are diagnostic aids: they flag statistically unusual calls, they don't
 confirm errors, and they can miss real ones. `report`/`detect` print this
 disclaimer, plus the pricing data's `last_updated` date, on every run.
+
+### `detect --follow`
+
+```bash
+llm-burnwatch detect --log-file data/calls.jsonl --follow --poll-interval 5
+```
+
+Instead of a single one-shot report, `--follow` polls `--log-file` every
+`--poll-interval` seconds (default `5`), re-analyzes a fixed-size rolling
+window of the most recently seen records, and prints each **newly**
+triggered alert as one JSON object per line to stdout as soon as it's found
+— a different, streaming output format from the one-shot `--json` payload
+(passing both together prints a warning and `--json` is ignored). Each
+alert line looks like:
+
+```json
+{"detector": "rules", "severity": "critical", "kind": "call_cost_exceeded", "group_key": [null, null], "record_ref": 5, "message": "...", "evidence": {...}}
+```
+
+Progress (byte offset already read per file, plus the current window) is
+saved to `<log-file>.llm-burnwatch-follow-state.json`, next to the log, so
+stopping and restarting `--follow` resumes instead of re-scanning the whole
+log. A missing state file is a normal first run (no warning); a corrupted or
+malformed one is never fatal — `--follow` warns and starts over from the
+beginning of the log rather than crashing. Runs until interrupted
+(<kbd>Ctrl</kbd>+<kbd>C</kbd>), then exits `0`.
+
+Known limitations, by design:
+- Only reads new lines appended to the file(s) at their current path/name;
+  rotated backups (`calls.jsonl.1`, `calls.jsonl.2`, ...) are not read while
+  following — restart `--follow` after rotation if you need to catch up on
+  a backup file's tail. Truncation of the file at its current name (e.g. a
+  writer that reopens it in truncate mode) is detected and handled by
+  resuming from byte `0`.
+- The ML cross-check and the log-wide label-cardinality warning that
+  one-shot `detect` prints are not run in `--follow` mode (the former
+  reloads a model from disk on every poll, the latter would repeat almost
+  identically every poll) — only the baseline/frequency/rules detectors run.
+- An alert whose evidence points at an older record already surfaced in a
+  previous poll is not re-printed, even if re-analyzing the window is what
+  produced it again this time.
 
 ## Log format
 

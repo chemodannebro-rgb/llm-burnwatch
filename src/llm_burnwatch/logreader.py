@@ -161,6 +161,84 @@ def filter_by_period(
     return kept
 
 
+def _read_new_lines(path: Path, offset: int) -> tuple[list[str], int]:
+    """Read whole new lines appended to `path` since byte `offset`.
+
+    Returns `(lines, new_offset)`. A missing file yields `([], offset)`
+    unchanged, so callers can poll a log that hasn't been created yet. If
+    the file is now *smaller* than `offset` (rotated or truncated since the
+    last poll), reading restarts from byte 0 for this path -- the same
+    "start over rather than crash" tolerance `--follow`'s state file uses.
+
+    Only complete lines (ending in `\\n`) are consumed; a trailing partial
+    line -- the writer still mid-write -- is left unread and picked up
+    whole on the next poll, rather than parsed as (possibly truncated)
+    JSON early.
+
+    Reads in binary mode so `new_offset` is an exact byte position
+    regardless of multi-byte UTF-8 characters, unlike `TextIOWrapper.tell()`
+    after iterating lines.
+    """
+    if not path.exists():
+        return [], offset
+    if path.stat().st_size < offset:
+        offset = 0
+    with path.open("rb") as fh:
+        fh.seek(offset)
+        data = fh.read()
+    if not data:
+        return [], offset
+    if data.endswith(b"\n"):
+        complete = data
+    else:
+        idx = data.rfind(b"\n")
+        complete = data[: idx + 1] if idx != -1 else b""
+    if not complete:
+        return [], offset
+    new_offset = offset + len(complete)
+    lines = complete.decode("utf-8").splitlines()
+    return lines, new_offset
+
+
+def read_new_records(path, offsets: dict[str, int]) -> tuple[list[dict], dict[str, int], int]:
+    """Read only the records appended to `path` since the byte offsets
+    recorded in `offsets` (keyed by file path string), for `detect --follow`.
+
+    Mirrors `iter_log_records()`'s directory-mode support (one `*.jsonl`
+    file per process) but, unlike it, never re-reads a file from the start
+    on a later call -- each file's own offset picks up exactly where the
+    previous call left off. Rotated backups (`path.1`, `path.2`, ...) are
+    intentionally NOT read here: a file rotating away mid-follow is treated
+    as a size-shrink on its original name (see `_read_new_lines`), which
+    resets that name's offset to 0 and reads whatever new content appears
+    there next -- a known, documented limitation, not a crash.
+
+    Returns `(new_records, updated_offsets, corrupt_count)`. Corrupt JSON
+    lines are skipped and counted, not raised, same tolerance as
+    `iter_log_records()`.
+    """
+    path = Path(path)
+    files = sorted(path.glob("*.jsonl")) if path.is_dir() else [path]
+
+    new_records: list[dict] = []
+    updated_offsets = dict(offsets)
+    corrupt_count = 0
+    for f in files:
+        key = str(f)
+        lines, new_offset = _read_new_lines(f, offsets.get(key, 0))
+        updated_offsets[key] = new_offset
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                new_records.append(json.loads(line))
+            except json.JSONDecodeError:
+                corrupt_count += 1
+
+    return new_records, updated_offsets, corrupt_count
+
+
 def check_scale(path, record_count: int) -> None:
     """Warn if a single call read an unexpectedly large number of records
     from a plain file that has neither rotation backups nor directory mode

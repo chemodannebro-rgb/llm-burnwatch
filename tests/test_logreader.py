@@ -12,6 +12,7 @@ from llm_burnwatch.logreader import (
     filter_by_period,
     iter_log_records,
     parse_timestamp,
+    read_new_records,
 )
 
 
@@ -185,3 +186,83 @@ def test_parse_timestamp_returns_none_for_unparseable_or_missing_value():
     assert parse_timestamp("not-a-timestamp") is None
     assert parse_timestamp(None) is None
     assert parse_timestamp(12345) is None
+
+
+def test_read_new_records_on_missing_file_returns_nothing_and_keeps_offset(tmp_path):
+    path = tmp_path / "calls.jsonl"
+    records, offsets, corrupt_count = read_new_records(path, {})
+    assert records == []
+    assert offsets == {str(path): 0} or offsets == {}
+    assert corrupt_count == 0
+
+
+def test_read_new_records_reads_only_lines_appended_since_last_offset(tmp_path):
+    path = tmp_path / "calls.jsonl"
+    _write_lines(path, [{"seq": 1}, {"seq": 2}])
+
+    first_records, offsets, _ = read_new_records(path, {})
+    assert [r["seq"] for r in first_records] == [1, 2]
+
+    # Nothing new yet -- a second poll at the same offset reads nothing.
+    second_records, offsets, _ = read_new_records(path, offsets)
+    assert second_records == []
+
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"seq": 3}) + "\n")
+    third_records, offsets, _ = read_new_records(path, offsets)
+    assert [r["seq"] for r in third_records] == [3]
+
+
+def test_read_new_records_leaves_a_partial_trailing_line_for_next_poll(tmp_path):
+    path = tmp_path / "calls.jsonl"
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"seq": 1}) + "\n")
+        fh.write('{"seq": 2, "note": "unfin')  # writer mid-write, no trailing \n
+
+    records, offsets, _ = read_new_records(path, {})
+    assert [r["seq"] for r in records] == [1]
+
+    # Completing the line on a later poll picks it up whole, not truncated.
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write('ished"}\n')
+    records, offsets, _ = read_new_records(path, offsets)
+    assert records == [{"seq": 2, "note": "unfinished"}]
+
+
+def test_read_new_records_restarts_from_zero_if_file_shrank(tmp_path):
+    path = tmp_path / "calls.jsonl"
+    _write_lines(path, [{"seq": 1}, {"seq": 2}])
+    _, offsets, _ = read_new_records(path, {})
+
+    # Simulate rotation/truncation: the file at this name is now smaller
+    # than the previously recorded offset.
+    _write_lines(path, [{"seq": 100}])
+    records, offsets, _ = read_new_records(path, offsets)
+    assert [r["seq"] for r in records] == [100]
+
+
+def test_read_new_records_counts_corrupt_lines_without_raising(tmp_path):
+    path = tmp_path / "calls.jsonl"
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"seq": 1}) + "\n")
+        fh.write("{not valid json}\n")
+        fh.write(json.dumps({"seq": 2}) + "\n")
+
+    records, offsets, corrupt_count = read_new_records(path, {})
+    assert [r["seq"] for r in records] == [1, 2]
+    assert corrupt_count == 1
+
+
+def test_read_new_records_directory_mode_tracks_offsets_per_file(tmp_path):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    _write_lines(log_dir / "proc-a.jsonl", [{"seq": 1}])
+    _write_lines(log_dir / "proc-b.jsonl", [{"seq": 2}])
+
+    records, offsets, _ = read_new_records(log_dir, {})
+    assert sorted(r["seq"] for r in records) == [1, 2]
+
+    with (log_dir / "proc-a.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"seq": 3}) + "\n")
+    records, offsets, _ = read_new_records(log_dir, offsets)
+    assert [r["seq"] for r in records] == [3]

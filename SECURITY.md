@@ -71,3 +71,31 @@ supply inflated or deflated per-model rates, which would silently skew every
 future `report`/`dashboard`/`detect` cost calculation until you re-import a
 correct file or delete `~/.config/llm-burnwatch/pricing.json`. This is a data
 (pricing accuracy) risk, not a code-execution risk.
+
+## `detect --follow` state-file trust boundary
+
+`detect --follow` persists its progress (the byte offset already consumed
+from `--log-file`, and the current rolling analysis window) to
+`<log-file>.llm-burnwatch-follow-state.json`, a plain JSON file written next
+to the log with the same atomic-write pattern (`tempfile.mkstemp` +
+`os.replace`) already used by `pricing import`.
+
+What this protects against: a process killed mid-write never leaves a
+half-written state file behind (the temp file is renamed into place only
+after the write completes). At load time, the file's top-level shape is
+validated (`offsets` must be an object, `window` a list) before its contents
+are trusted; a state file that's missing, unreadable, not valid JSON, or the
+wrong shape is never fatal — `--follow` warns and starts over from the
+beginning of the log rather than crashing or silently misbehaving.
+
+What this does **not** protect against: the state file is read back as data
+(byte offsets and a list of previously seen log records) with no integrity
+check analogous to the model registry's sha256 above. Someone with write
+access to this file could hand-edit it to change the byte offset `--follow`
+resumes from (causing it to skip or re-read parts of the log) or inject
+arbitrary JSON objects into the persisted `window`, which would then be
+re-analyzed by the detector registry on the next poll alongside genuine log
+records. This is the same trust level as the log file itself: if you don't
+trust everyone with write access to `--log-file`'s directory, you're
+already trusting them not to tamper with the log, and the follow-state file
+sitting alongside it carries no stronger guarantee.

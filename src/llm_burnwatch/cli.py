@@ -34,13 +34,20 @@ import csv
 import json
 import os
 import sys
+import time
+from collections import deque
 from datetime import date
 from pathlib import Path
 from typing import Iterator
 
 from . import __version__
 from ._messages import error, warn
-from .anomaly.constants import CONTAMINATION, KEEP_LAST_DEFAULT, Z_SCORE_THRESHOLD
+from .anomaly.constants import (
+    CONTAMINATION,
+    FOLLOW_WINDOW_SIZE,
+    KEEP_LAST_DEFAULT,
+    Z_SCORE_THRESHOLD,
+)
 from .anomaly.features import (
     check_label_cardinality,
     compute_reference_stats,
@@ -55,7 +62,14 @@ from .detectors.baseline_detector import BaselineDetector
 from .detectors.engine import run_detectors
 from .detectors.frequency_detector import FrequencyDetector
 from .detectors.rules_detector import RulesDetector
-from .logreader import check_scale, filter_by_period, iter_log_records, parse_date
+from .follow_state import load_follow_state, save_follow_state, state_path_for
+from .logreader import (
+    check_scale,
+    filter_by_period,
+    iter_log_records,
+    parse_date,
+    read_new_records,
+)
 from .pricing_import import PricingImportError, import_pricing
 from .tracker import build_report, resolve_pricing, user_pricing_path
 
@@ -379,7 +393,42 @@ def _run_ml_cross_check(records: list[dict], model_dir: str) -> dict | None:
     }
 
 
+def _detect_registry(args: argparse.Namespace) -> list:
+    """The detector registry `detect`/`detect --follow` both build from the
+    same CLI flags -- kept in one place so the two entry points can't drift.
+    """
+    return [
+        BaselineDetector(threshold=args.threshold),
+        FrequencyDetector(),
+        RulesDetector(
+            allowed_models=args.allowed_models,
+            max_call_cost_usd=args.max_call_cost,
+            max_trace_cost_usd=args.max_trace_cost,
+        ),
+    ]
+
+
+def _frequency_enabled_for(records: list[dict], args: argparse.Namespace) -> tuple[bool, bool]:
+    """Returns `(frequency_enabled, seasonal_available)` for this batch of
+    `records`, applying `--frequency-detector`'s auto/on/off decision.
+    """
+    seasonal_available = has_seasonal_coverage(records)
+    if args.frequency_detector == "auto":
+        frequency_enabled = seasonal_available
+    else:
+        frequency_enabled = args.frequency_detector == "on"
+    return frequency_enabled, seasonal_available
+
+
 def cmd_detect(args: argparse.Namespace) -> int:
+    if args.follow:
+        if args.json:
+            warn(
+                "--follow always streams newline-delimited JSON alerts to "
+                "stdout; --json is ignored in follow mode"
+            )
+        return _run_detect_follow(args)
+
     try:
         records = list(iter_log_records(args.log_file))
     except FileNotFoundError as exc:
@@ -405,23 +454,11 @@ def cmd_detect(args: argparse.Namespace) -> int:
     # `FrequencyDetector`'s docstring). `--frequency-detector on/off`
     # overrides that decision explicitly in either direction, the same
     # override pattern already used for `RulesDetector`'s CLI flags.
-    seasonal_available = has_seasonal_coverage(records)
-    if args.frequency_detector == "auto":
-        frequency_enabled = seasonal_available
-    else:
-        frequency_enabled = args.frequency_detector == "on"
+    frequency_enabled, seasonal_available = _frequency_enabled_for(records, args)
 
     alerts = run_detectors(
         records,
-        registry=[
-            BaselineDetector(threshold=args.threshold),
-            FrequencyDetector(),
-            RulesDetector(
-                allowed_models=args.allowed_models,
-                max_call_cost_usd=args.max_call_cost,
-                max_trace_cost_usd=args.max_trace_cost,
-            ),
-        ],
+        registry=_detect_registry(args),
         enabled_overrides={"frequency": frequency_enabled},
     )
 
@@ -512,6 +549,120 @@ def cmd_detect(args: argparse.Namespace) -> int:
             )
 
     return 1 if (anomalous or rule_violations or frequency_spikes) else 0
+
+
+def _detect_follow_poll(
+    log_path: Path,
+    offsets: dict[str, int],
+    window: deque,
+    args: argparse.Namespace,
+) -> tuple[list, dict[str, int], bool]:
+    """Run a single `--follow` poll: read whatever's new in `log_path` since
+    `offsets`, fold it into `window` (mutated in place, evicting the oldest
+    records past `FOLLOW_WINDOW_SIZE`), and re-run the detector registry over
+    the resulting window.
+
+    Returns `(new_alerts, updated_offsets, had_new_records)`. `new_alerts` is
+    restricted to alerts whose `record_ref` falls at or after the index the
+    newly arrived records start at -- since a `deque`'s `maxlen` only ever
+    evicts from the *left*, that index cleanly separates "already surfaced
+    in an earlier poll" from "triggered by data that arrived just now"
+    without needing a stable identity per record across polls. `had_new_records`
+    tells the caller whether state actually changed and needs saving, even
+    when this poll happened to produce zero alerts.
+
+    Known limitation: an alert whose `record_ref` points at a record from a
+    *previous* poll (e.g. `FrequencyDetector` reporting a window's first
+    record) is filtered out even if the detection itself only became true
+    because of newly arrived data -- accepted as a deliberate, documented
+    trade-off of re-running stateless, batch detectors over a sliding window
+    rather than each detector tracking its own incremental state.
+    """
+    new_records, offsets, corrupt_count = read_new_records(log_path, offsets)
+    if corrupt_count:
+        warn(f"skipped {corrupt_count} corrupt log line(s) this poll")
+
+    if not new_records:
+        return [], offsets, False
+
+    window.extend(new_records)
+    records = list(window)
+    new_start_index = len(records) - len(new_records)
+
+    frequency_enabled, _ = _frequency_enabled_for(records, args)
+    alerts = run_detectors(
+        records,
+        registry=_detect_registry(args),
+        enabled_overrides={"frequency": frequency_enabled},
+    )
+    new_alerts = [
+        a for a in alerts if a.record_ref is not None and a.record_ref >= new_start_index
+    ]
+    return new_alerts, offsets, True
+
+
+def _print_follow_alert(a) -> None:
+    print(
+        json.dumps(
+            {
+                "detector": a.detector,
+                "severity": a.severity,
+                "kind": a.kind,
+                "group_key": a.group_key,
+                "record_ref": a.record_ref,
+                "message": a.message,
+                "evidence": a.evidence,
+            }
+        )
+    )
+
+
+def _run_detect_follow(args: argparse.Namespace) -> int:
+    """`detect --follow`: poll `args.log_file` every `args.poll_interval`
+    seconds, re-running the same detector registry `detect` uses over a
+    fixed-size rolling window (`FOLLOW_WINDOW_SIZE`) of the most recently
+    seen records, and print each newly triggered alert as one JSON object
+    per line to stdout as soon as it's found (see `_detect_follow_poll`).
+
+    State (per-file byte offsets already consumed, and the current window)
+    persists to `follow_state.state_path_for(args.log_file)` between runs,
+    so stopping and restarting `--follow` resumes rather than re-scanning
+    the whole log or missing what arrived while it wasn't running.
+
+    Deliberately out of scope for this streaming mode (unlike one-shot
+    `detect`): the ML cross-check (`_run_ml_cross_check` loads a model
+    fresh from disk, too expensive to repeat every poll) and
+    `check_label_cardinality`'s log-wide cardinality warning (would repeat
+    identically almost every poll). Runs until interrupted (Ctrl+C), then
+    exits `0`.
+    """
+    log_path = Path(args.log_file)
+    state_path = state_path_for(log_path)
+    state = load_follow_state(state_path)
+    window: deque = deque(state["window"], maxlen=FOLLOW_WINDOW_SIZE)
+    offsets: dict[str, int] = state["offsets"]
+
+    warn(
+        f"following {log_path} every {args.poll_interval}s, "
+        f"window={FOLLOW_WINDOW_SIZE} record(s); state file: {state_path} "
+        "(Ctrl+C to stop)"
+    )
+
+    try:
+        while True:
+            new_alerts, offsets, had_new_records = _detect_follow_poll(
+                log_path, offsets, window, args
+            )
+            if new_alerts:
+                for a in new_alerts:
+                    _print_follow_alert(a)
+                sys.stdout.flush()
+            if had_new_records:
+                save_follow_state(state_path, {"offsets": offsets, "window": list(window)})
+
+            time.sleep(args.poll_interval)
+    except KeyboardInterrupt:
+        return 0
 
 
 def _contamination_type(value: str):
@@ -789,6 +940,22 @@ def build_parser() -> argparse.ArgumentParser:
             "the log has enough calendar span for a seasonal (weekday/hour) baseline; "
             "'on'/'off' override that decision explicitly"
         ),
+    )
+    detect_p.add_argument(
+        "--follow",
+        action="store_true",
+        help=(
+            "Keep polling --log-file for new records and stream newly triggered "
+            "alerts as one JSON object per line to stdout, instead of a single "
+            "one-shot report. Ignores --json (follow mode has its own streaming "
+            "output format)."
+        ),
+    )
+    detect_p.add_argument(
+        "--poll-interval",
+        type=_positive_float,
+        default=5.0,
+        help="Seconds between polls in --follow mode (default: 5.0)",
     )
     detect_p.set_defaults(handler=cmd_detect)
 

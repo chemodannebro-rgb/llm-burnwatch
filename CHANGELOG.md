@@ -113,6 +113,52 @@ All notable changes to this project are documented in this file.
   was enabled for this run. `detect`'s exit code now also returns `1` when a
   frequency spike is found. `CusumDetector` remains unwired into `detect`'s
   CLI registry -- out of scope for this change, unchanged from v0.8.2.
+- `detect --follow` (v0.8.5): a new streaming mode, plus `--poll-interval
+  <seconds>` (default `5.0`). Instead of a single one-shot report, `--follow`
+  polls `--log-file` repeatedly, re-running the same detector registry over
+  a fixed-size rolling window (`FOLLOW_WINDOW_SIZE`, 5000 records -- new
+  constant in `anomaly/constants.py`) of the most recently seen records, and
+  prints each newly triggered alert as one JSON object per line to stdout as
+  soon as it's found. `--json` is ignored (with a `warn()`) if passed
+  together with `--follow` -- the streaming format is a distinct contract
+  from the one-shot `--json` payload, not a replacement for it.
+  - `logreader.read_new_records()`: a new function (alongside, not
+    replacing, `iter_log_records()`) that reads only the complete lines
+    appended to a file since a given byte offset, using binary-mode reads
+    so offsets stay exact regardless of multi-byte UTF-8 content. A
+    trailing partial line (writer still mid-write) is left unread and
+    picked up whole on a later poll rather than parsed truncated. Supports
+    both single-file and directory-mode logs, tracking one offset per file.
+    Known limitation: only reads new lines appended at a file's current
+    name -- rotated backups (`calls.jsonl.1`, `.2`, ...) are not read while
+    following. If a tracked file has shrunk since its last recorded offset
+    (truncation, or an in-place-rewriting log rotation), reading restarts
+    from byte `0` for that file.
+  - `follow_state` (new module): persists the byte offsets already consumed
+    and the current rolling window to `<log>.llm-burnwatch-follow-state.json`,
+    a sibling of the log file, written atomically (`tempfile.mkstemp` +
+    `os.replace`, the same pattern `pricing_import.import_pricing` already
+    uses) so a process killed mid-write never leaves a half-written state
+    file behind. A missing state file (first run) is silent; a corrupted or
+    malformed one is never fatal -- `--follow` warns and starts over from
+    the beginning of the log, the same graceful-degradation discipline
+    already used for a tampered ML model registry.
+  - Each poll only reports alerts triggered by data that arrived *this*
+    poll, not the whole window being re-analyzed from scratch -- since the
+    rolling window only ever evicts from its oldest (left) end, records
+    newly appended this poll are always at the tail, so alerts referencing
+    an index at or after that tail boundary are "new" and everything before
+    it is filtered out as already surfaced in an earlier poll. Known,
+    accepted trade-off: an alert whose evidence points at an *older* record
+    (e.g. a frequency spike's first record in its window) is filtered out
+    even if the detection itself only became true because of newly arrived
+    data -- a consequence of re-running stateless, batch detectors over a
+    sliding window rather than giving each detector its own incremental
+    state.
+  - Deliberately not run in `--follow` mode, unlike one-shot `detect`: the
+    ML cross-check (reloads a model from disk, too expensive every poll) and
+    the log-wide label-cardinality warning (would repeat almost identically
+    every poll).
 
 ## [0.7.0] - 2026-07-05
 

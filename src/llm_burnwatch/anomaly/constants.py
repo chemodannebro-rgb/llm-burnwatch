@@ -119,3 +119,16 @@ CUSUM_SLACK_MULTIPLIER = 0.5
 # being trusted over the flat, non-seasonal fallback (see
 # `detectors.frequency_detector.FrequencyDetector`).
 MIN_SEASONAL_SPAN_DAYS = 14
+
+# `detect --follow`: how many of the most recently seen records are kept in
+# the rolling in-memory/on-disk window that detectors re-analyze on every
+# poll. A fixed size (not "all records since the log started") keeps each
+# poll's `run_detectors()` call cheap regardless of how long `--follow` has
+# been running, per the milestone's design decision to re-run detectors over
+# a small, bounded window rather than accumulate unbounded streaming state.
+# 5000 is generously larger than every other group-size constant in this
+# file (e.g. `MIN_GROUP_SAMPLES`, `MIN_SEASONAL_SPAN_DAYS`'s implied sample
+# counts) so detectors that need real history (baseline, CUSUM, frequency)
+# still have enough of it, while staying small enough to reanalyze every
+# `--poll-interval` without noticeable latency.
+FOLLOW_WINDOW_SIZE = 5000
