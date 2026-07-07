@@ -267,6 +267,15 @@ This generates a local model registry under `models/` in a few seconds — it
 isn't committed to the repository (a trained model binary as a trusted
 public artifact is a supply-chain liability; see `SECURITY.md`).
 
+For the full "actions" pipeline in one run — a LangChain adapter logging
+calls, a monthly budget, `detect --follow`, and a webhook sink all wired
+together against a real local HTTP receiver — see
+[`examples/e2e_actions_demo.py`](examples/e2e_actions_demo.py):
+
+```bash
+python examples/e2e_actions_demo.py
+```
+
 ## Anomaly detection
 
 Two independent, complementary layers:

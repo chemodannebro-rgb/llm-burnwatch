@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.6] - 2026-07-07
+
+### Added
+- `examples/e2e_actions_demo.py`: an end-to-end smoke-test/demo tying
+  together every "actions" milestone from v0.9 in one run --
+  `CostTracker.log_langchain_result()` (0.9.5) logging calls, a real
+  `budget.json` (0.9.2, via `budget.save_budget()`) so `BudgetDetector`
+  fires, `detect --follow` (0.9.1's registry) polling that log, and a
+  `WebhookSink` (0.9.1) delivering alerts to a genuine local
+  `http.server.HTTPServer` started by the script itself -- unlike every
+  `test_sinks_webhook.py`/`test_detect_follow.py` test, which monkeypatches
+  `urlopen` directly, this is the one place in the repo that proves the
+  webhook sink's HTTP POST actually round-trips over a real socket.
+  Deliberately not a pytest test: `detect --follow`'s poll loop is
+  intentionally infinite, so the script bounds it to exactly one poll by
+  patching `time.sleep` to raise `KeyboardInterrupt` -- the same trick
+  `test_detect_follow.py` already uses -- rather than adding a real
+  integration test that runs an infinite loop under pytest.
+
+### Scoped out
+- No GIF was added for this demo. The original plan called for one "as
+  already accepted for other demo sections", but no such precedent
+  actually exists in the repo: the only visual asset is a static
+  `docs/dashboard.png` screenshot of the HTML dashboard (a different
+  feature, with its own screenshot rule in `CONTRIBUTING.md`), and there is
+  no GIF/terminal-recording tooling anywhere in the project. Adding one
+  would mean introducing a new dev-only tool (e.g. `vhs`/`asciinema`) with
+  no other use in the codebase, just for one README demo -- decided against
+  after asking; the demo's own printed output (included in its docstring
+  and README's usage) documents what it does instead.
+
 ## [0.9.5] - 2026-07-07
 
 ### Added
