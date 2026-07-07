@@ -1,6 +1,6 @@
 """Command-line interface for llm-burnwatch.
 
-Eight subcommands:
+Nine subcommands:
   report          -- cost summary read back from a log
   demo-data       -- write a synthetic log with a known number of injected anomalies
   detect          -- baseline (+ optional ML cross-check) anomaly detection over a log
@@ -9,9 +9,10 @@ Eight subcommands:
   validate        -- check a log's records against the packaged JSON schema
   dashboard       -- write a static single-file HTML cost report with a daily journal
   pricing import  -- import pricing data from a local file or http(s):// URL
+  budget set/show -- configure/inspect a monthly USD budget for detect/report
 
-`report`/`demo-data`/`schema`/`validate`/`dashboard`/`detect`/`train` never
-make a network call. `detect` only imports scikit-learn indirectly, via
+`report`/`demo-data`/`schema`/`validate`/`dashboard`/`detect`/`train`/`budget`
+never make a network call. `detect` only imports scikit-learn indirectly, via
 `registry.load_model` deserializing (via `skops.io`) an existing model -- if
 none exists yet, `detect` runs baseline-only and never touches scikit-learn
 either. `train` imports `anomaly.train` (which imports scikit-learn at module
@@ -61,9 +62,11 @@ from .anomaly.features import (
 )
 from .anomaly.registry import latest_version_dir, load_model
 from .anomaly.seasonal import has_seasonal_coverage, seasonal_coverage_message
+from .budget import load_budget, save_budget
 from .dashboard import render_dashboard
 from .demo_data import DEFAULT_SEED, write_demo_log
 from .detectors.baseline_detector import BaselineDetector
+from .detectors.budget_detector import BudgetDetector, compute_budget_status
 from .detectors.cusum_detector import CusumDetector
 from .detectors.engine import run_detectors
 from .detectors.frequency_detector import FrequencyDetector
@@ -83,7 +86,7 @@ from .sinks.protocol import send_to_all
 from .sinks.slack_sink import SlackSink
 from .sinks.telegram_sink import TelegramSink
 from .sinks.webhook_sink import WebhookSink
-from .tracker import build_report, resolve_pricing, user_pricing_path
+from .tracker import build_report, resolve_pricing, user_budget_path, user_pricing_path
 
 DISCLAIMER = (
     "llm-burnwatch is a diagnostic aid, not a guarantee: it flags statistically "
@@ -120,6 +123,13 @@ def _positive_float(value: str) -> float:
     parsed = float(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError(f"must be a positive number, got {value!r}")
+    return parsed
+
+
+def _fraction_arg(value: str) -> float:
+    parsed = float(value)
+    if not (0 < parsed <= 1):
+        raise argparse.ArgumentTypeError(f"must be > 0 and <= 1, got {value!r}")
     return parsed
 
 
@@ -193,6 +203,48 @@ def _filter_report_records(records, args, counts: dict) -> Iterator[dict]:
         yield record
 
 
+def _budget_status_for(args: argparse.Namespace) -> dict | None:
+    """Budget status for `report`'s Budget section, or `None` if budget
+    tracking isn't configured (`budget.json` absent/unreadable) or no record
+    in the log falls in the current UTC calendar month yet -- in either case
+    the caller should omit the Budget section entirely rather than print a
+    "not configured" placeholder (quieter default for scripts parsing this
+    output). Deliberately reads the whole, unfiltered log regardless of
+    `--since`/`--until`/`--trace-id` -- budget tracking is about this
+    calendar month's actual spend, not whatever period the rest of `report`
+    was asked to summarize.
+    """
+    budget_config = load_budget(user_budget_path())
+    if budget_config is None:
+        return None
+    try:
+        records = list(iter_log_records(args.log_file))
+    except FileNotFoundError:
+        return None
+    return compute_budget_status(
+        records, budget_config["monthly_usd"], budget_config["warn_at_fraction"]
+    )
+
+
+def _print_budget_status(status: dict) -> None:
+    print("budget:")
+    print(f"  month: {status['month']}")
+    print(f"  monthly budget: ${status['monthly_usd']:.2f}")
+    print(f"  month-to-date: ${status['month_to_date_usd']:.2f}")
+    print(f"  projected month-end: ${status['forecast_usd']:.2f}")
+    if status["over_budget"]:
+        print("  status: budget exceeded")
+    elif status["pace_warning"]:
+        print(f"  status: on pace to exceed {status['warn_at_fraction']:.0%} of budget")
+    else:
+        print("  status: within budget")
+    if status["low_confidence"]:
+        print(
+            f"  note: only {status['days_elapsed']} day(s) elapsed this month -- "
+            "projection is low-confidence"
+        )
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     if args.json and args.format == "csv":
         error("--json and --format csv are mutually exclusive")
@@ -225,9 +277,14 @@ def cmd_report(args: argparse.Namespace) -> int:
         _print_report_csv(result)
         return 0
 
+    budget_status = _budget_status_for(args)
+
     if result["call_count"] == 0:
         if args.json:
-            print(json.dumps(result, indent=2))
+            payload = dict(result)
+            if budget_status is not None:
+                payload["budget"] = budget_status
+            print(json.dumps(payload, indent=2))
             return 0
         _print_header(pricing)
         if args.trace_id is not None:
@@ -236,6 +293,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             print("no records found in the given period")
         else:
             print("no records found in log")
+        if budget_status is not None:
+            _print_budget_status(budget_status)
         return 0
 
     if args.json:
@@ -248,6 +307,8 @@ def cmd_report(args: argparse.Namespace) -> int:
                 payload["fx_rate"] = fx_rate
                 payload["currency"] = currency
                 payload["total_cost_fx"] = result["total_cost_usd"] * fx_rate
+        if budget_status is not None:
+            payload["budget"] = budget_status
         print(json.dumps(payload, indent=2))
         return 0
 
@@ -267,6 +328,8 @@ def cmd_report(args: argparse.Namespace) -> int:
     print("by model:")
     for model, micros in sorted(result["by_model_micros"].items()):
         print(f"  {model}: ${micros / 1_000_000:.6f}")
+    if budget_status is not None:
+        _print_budget_status(budget_status)
     return 0
 
 
@@ -405,9 +468,10 @@ def _run_ml_cross_check(records: list[dict], model_dir: str) -> dict | None:
     }
 
 
-def _detect_registry(args: argparse.Namespace) -> list:
+def _detect_registry(args: argparse.Namespace, budget_config: dict | None) -> list:
     """The detector registry `detect`/`detect --follow` both build from the
-    same CLI flags -- kept in one place so the two entry points can't drift.
+    same CLI flags (plus `budget_config`, loaded fresh from `budget.json` by
+    the caller) -- kept in one place so the two entry points can't drift.
     """
     return [
         BaselineDetector(threshold=args.threshold),
@@ -418,7 +482,18 @@ def _detect_registry(args: argparse.Namespace) -> list:
             max_call_cost_usd=args.max_call_cost,
             max_trace_cost_usd=args.max_trace_cost,
         ),
+        BudgetDetector(
+            monthly_usd=budget_config["monthly_usd"] if budget_config else None,
+            warn_at_fraction=budget_config["warn_at_fraction"] if budget_config else None,
+        ),
     ]
+
+
+def _budget_config() -> dict | None:
+    """Load `budget.json` (written by `llm-burnwatch budget set`), or `None`
+    if budget tracking hasn't been configured (or is unreadable -- see
+    `budget.load_budget`)."""
+    return load_budget(user_budget_path())
 
 
 def _frequency_enabled_for(records: list[dict], args: argparse.Namespace) -> tuple[bool, bool]:
@@ -492,11 +567,17 @@ def cmd_detect(args: argparse.Namespace) -> int:
     # override pattern already used for `RulesDetector`'s CLI flags.
     frequency_enabled, seasonal_available = _frequency_enabled_for(records, args)
     cusum_enabled = _cusum_enabled_for(args)
+    budget_config = _budget_config()
+    budget_enabled = budget_config is not None
 
     alerts = run_detectors(
         records,
-        registry=_detect_registry(args),
-        enabled_overrides={"frequency": frequency_enabled, "cusum": cusum_enabled},
+        registry=_detect_registry(args, budget_config),
+        enabled_overrides={
+            "frequency": frequency_enabled,
+            "cusum": cusum_enabled,
+            "budget": budget_enabled,
+        },
     )
 
     anomalous = [(a.record_ref, a) for a in alerts if a.kind == "zscore_outlier"]
@@ -511,6 +592,10 @@ def cmd_detect(args: argparse.Namespace) -> int:
     # Level shifts from CusumDetector -- likewise additive; only present at
     # all when `cusum_enabled` is True for this run (on by default).
     level_shifts = [a for a in alerts if a.detector == "cusum"]
+    # Budget alerts (budget_exceeded/budget_pace_warning) -- likewise
+    # additive; only present at all when `budget_enabled` is True for this
+    # run (i.e. `llm-burnwatch budget set` has been run).
+    budget_alerts = [a for a in alerts if a.detector == "budget"]
 
     ml_info = _run_ml_cross_check(records, args.model_dir)
 
@@ -571,6 +656,17 @@ def cmd_detect(args: argparse.Namespace) -> int:
                 }
                 for a in level_shifts
             ],
+            "budget_detector_enabled": budget_enabled,
+            "budget_alert_count": len(budget_alerts),
+            "budget_alerts": [
+                {
+                    "index": a.record_ref,
+                    "kind": a.kind,
+                    "message": a.message,
+                    "evidence": a.evidence,
+                }
+                for a in budget_alerts
+            ],
             "ml": ml_info,
         }
         print(json.dumps(payload, indent=2))
@@ -598,13 +694,21 @@ def cmd_detect(args: argparse.Namespace) -> int:
             print(f"{len(level_shifts)} level shift(s) found:")
             for a in level_shifts:
                 print(f"- [{a.record_ref}] {a.group_key}: {a.message}")
+        if budget_enabled and budget_alerts:
+            print(f"{len(budget_alerts)} budget alert(s) found:")
+            for a in budget_alerts:
+                print(f"- [{a.record_ref}] {a.kind}: {a.message}")
         if ml_info is not None and ml_info.get("available"):
             print(
                 f"ML cross-check (model v{ml_info['model_version']}): "
                 f"{ml_info['anomaly_count']} call(s) flagged"
             )
 
-    return 1 if (anomalous or rule_violations or frequency_spikes or level_shifts) else 0
+    return (
+        1
+        if (anomalous or rule_violations or frequency_spikes or level_shifts or budget_alerts)
+        else 0
+    )
 
 
 def _detect_follow_poll(
@@ -649,10 +753,15 @@ def _detect_follow_poll(
 
     frequency_enabled, _ = _frequency_enabled_for(records, args)
     cusum_enabled = _cusum_enabled_for(args)
+    budget_config = _budget_config()
     alerts = run_detectors(
         records,
-        registry=_detect_registry(args),
-        enabled_overrides={"frequency": frequency_enabled, "cusum": cusum_enabled},
+        registry=_detect_registry(args, budget_config),
+        enabled_overrides={
+            "frequency": frequency_enabled,
+            "cusum": cusum_enabled,
+            "budget": budget_config is not None,
+        },
     )
     new_alerts = [
         a for a in alerts if a.record_ref is not None and a.record_ref >= new_start_index
@@ -845,6 +954,28 @@ def cmd_pricing_import(args: argparse.Namespace) -> int:
         error(str(exc))
         return 2
     print(f"imported {len(pricing['models'])} model(s) to {dest}")
+    return 0
+
+
+def cmd_budget_set(args: argparse.Namespace) -> int:
+    dest = user_budget_path()
+    save_budget(dest, args.monthly, args.warn_at)
+    print(
+        f"budget saved to {dest}: monthly=${args.monthly:.2f}, "
+        f"warn-at={args.warn_at:.0%}"
+    )
+    return 0
+
+
+def cmd_budget_show(args: argparse.Namespace) -> int:
+    path = user_budget_path()
+    budget_config = load_budget(path)
+    if budget_config is None:
+        print(f"no budget configured (would read from {path}); run `llm-burnwatch budget set`")
+        return 0
+    print(f"budget file: {path}")
+    print(f"monthly budget: ${budget_config['monthly_usd']:.2f}")
+    print(f"warn-at fraction: {budget_config['warn_at_fraction']:.0%}")
     return 0
 
 
@@ -1167,6 +1298,30 @@ def build_parser() -> argparse.ArgumentParser:
         "import from a URL you trust, see SECURITY.md)",
     )
     pricing_import_p.set_defaults(handler=cmd_pricing_import)
+
+    budget_p = subparsers.add_parser(
+        "budget", help="Configure/inspect a monthly USD budget for detect/report"
+    )
+    budget_sub = budget_p.add_subparsers(dest="budget_command", required=True)
+    budget_set_p = budget_sub.add_parser(
+        "set",
+        help="Set the monthly budget, saved to a user config file consulted by "
+        "`detect`'s BudgetDetector and `report`'s Budget section",
+    )
+    budget_set_p.add_argument(
+        "--monthly", type=_positive_float, required=True, help="Monthly budget in USD"
+    )
+    budget_set_p.add_argument(
+        "--warn-at",
+        type=_fraction_arg,
+        required=True,
+        help="Warn once the projected month-end cost exceeds this fraction (0-1) of "
+        "--monthly, e.g. 0.8 for an early warning at 80%% of budget",
+    )
+    budget_set_p.set_defaults(handler=cmd_budget_set)
+
+    budget_show_p = budget_sub.add_parser("show", help="Show the currently configured budget")
+    budget_show_p.set_defaults(handler=cmd_budget_show)
 
     return parser
 

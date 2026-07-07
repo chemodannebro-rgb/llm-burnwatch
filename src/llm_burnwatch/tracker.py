@@ -38,6 +38,18 @@ def user_pricing_path() -> Path:
     return base / "llm-burnwatch" / "pricing.json"
 
 
+def user_budget_path() -> Path:
+    """Path to the user-level budget.json written by `llm-burnwatch budget
+    set` -- `$XDG_CONFIG_HOME/llm-burnwatch/budget.json` if set, else
+    `~/.config/llm-burnwatch/budget.json`. Exact copy of `user_pricing_path`'s
+    resolution logic -- same directory, same XDG rules, just a different
+    filename -- so both config files coexist under one `llm-burnwatch/`
+    config directory."""
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(config_home) if config_home else Path.home() / ".config"
+    return base / "llm-burnwatch" / "budget.json"
+
+
 def resolve_pricing(explicit_path: str | None = None) -> dict:
     """Resolve which pricing.json to use, in priority order:
 

@@ -2,6 +2,67 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.2] - 2026-07-07
+
+### Added
+- `llm-burnwatch budget set --monthly <usd> --warn-at <0..1>` /
+  `llm-burnwatch budget show`: a user-level monthly USD budget, saved to
+  `~/.config/llm-burnwatch/budget.json` (`tracker.user_budget_path()`, an
+  exact copy of `user_pricing_path()`'s XDG resolution logic, so both files
+  coexist under one `llm-burnwatch/` config directory -- proven by a new
+  coexistence test, not just assumed). `budget.py`'s `load_budget()`/
+  `save_budget()` follow the same atomic-write (`tempfile.mkstemp` +
+  `os.replace`) and graceful-degradation discipline already used by
+  `pricing_import`/`follow_state`: a missing `budget.json` is silently
+  "not configured" (the expected state before `budget set` has ever run),
+  while a corrupt/malformed one is reported via `warn()` and then treated
+  the same as "not configured" -- never a crash.
+- `detectors.budget_detector.BudgetDetector`: a new detector, registered in
+  `DEFAULT_REGISTRY`, that sums `cost_micros` for the current UTC calendar
+  month and linearly extrapolates "month-to-date / days elapsed so far ×
+  days in month" into a projected month-end total. Emits `budget_exceeded`
+  (critical, month-to-date already over the configured monthly budget) or
+  `budget_pace_warning` (warning, the *forecast* exceeds `--warn-at`'s
+  fraction of the budget, even though month-to-date hasn't crossed it yet).
+  Deliberately does not reuse the seasonal (weekday × hour) baselines from
+  `anomaly/seasonal.py` -- "will this month exceed budget at the current
+  pace" is a different question from "is this hour unusual", and conflating
+  them would add complexity without improving the forecast. Like
+  `RulesDetector`, `enabled_by_default = False` and stays a silent no-op
+  until `budget set` has actually been run; unlike `RulesDetector`, it also
+  needs an explicit `enabled_overrides={"budget": True}` from the CLI,
+  computed fresh from `budget.json`'s presence on every `detect`/`detect
+  --follow` invocation, since its configuration comes from a file rather
+  than flags on `detect` itself.
+- **Low-confidence forecast flag**: the linear-pace projection is
+  inherently noisy in the first few days of a month (little data, high
+  variance). `compute_budget_status()` flags this explicitly
+  (`low_confidence`/`days_elapsed`) rather than silently presenting an
+  early-month forecast with unwarranted precision -- surfaced in both the
+  detector's alert message and `report`'s new `budget:` section.
+- `report` gained a `budget:` section (text and `--json`, keyed
+  `"budget"`) showing month, monthly budget, month-to-date spend,
+  projected month-end, and status -- present only when `budget set` has
+  been run (never a "budget: not configured" placeholder, so scripts
+  parsing `report --json` don't have to special-case an empty/absent
+  feature). Deliberately reads the whole, unfiltered log for this section
+  regardless of `--since`/`--until`/`--trace-id` -- budget tracking is
+  about the current calendar month's actual spend, not whatever period the
+  rest of `report` was asked to summarize -- and is skipped entirely for
+  `--format csv`, matching CSV's existing "stays a stripped 3-column table"
+  precedent. `detect`/`detect --follow` likewise gained `budget_alerts`
+  (plus `budget_detector_enabled`/`budget_alert_count` in `--json`),
+  wired the same way the `rules`/`frequency` detectors already are.
+
+### Note
+This is **detection, not enforcement** -- nothing added in this release
+stops a call from happening or interrupts a request in progress; it only
+surfaces that the current month is trending over budget, the same way the
+other detectors surface a statistical anomaly. A future in-process
+enforcement mechanism (`CostTracker.guard()`, planned for `[0.9.3]`) is a
+deliberately separate concern from this one and should not be assumed to
+exist yet.
+
 ## [0.9.1] - 2026-07-06
 
 ### Added

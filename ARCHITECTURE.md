@@ -109,6 +109,9 @@ src/llm_burnwatch/
 │                        merge + corrupt-line skipping), parse_date(),
 │                        filter_by_period(), check_scale()
 ├── demo_data.py         synthetic log generator (demo-data, tests)
+├── budget.py            load_budget()/save_budget(): user-level monthly
+│                        budget config (`budget set`/`show`, `BudgetDetector`),
+│                        same XDG path + atomic-write pattern as pricing.json
 ├── dashboard.py         render_dashboard(): static single-file HTML,
 │                        core-only (no scikit-learn)
 ├── cli.py               argparse wiring for all subcommands

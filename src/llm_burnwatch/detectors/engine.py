@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 from .baseline_detector import BaselineDetector
+from .budget_detector import BudgetDetector
 from .cusum_detector import CusumDetector
 from .frequency_detector import FrequencyDetector
 from .protocol import Alert, Detector
@@ -33,12 +34,17 @@ from .rules_detector import RulesDetector
 # future callers (e.g. `detect --follow`) that use it directly. `RulesDetector()`
 # with no configuration is a deliberate no-op (see its docstring), so it's
 # always safe to include here even though this default instance never has
-# any rule to enforce.
+# any rule to enforce. `BudgetDetector()` with no `monthly_usd` is likewise a
+# deliberate no-op (see its docstring) and also has `enabled_by_default =
+# False`, needing an explicit `enabled_overrides={"budget": True}` on top of
+# being configured -- the same two-part gating `cli.py` already applies to
+# `frequency`.
 DEFAULT_REGISTRY: list[Detector] = [
     BaselineDetector(),
     FrequencyDetector(),
     CusumDetector(),
     RulesDetector(),
+    BudgetDetector(),
 ]
 
 # Sort key only -- not a claim that "info" alerts matter less, just a stable,

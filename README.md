@@ -134,6 +134,8 @@ pip install -e ".[anomaly]"            # + train (IsolationForest, requires scik
 | `llm-burnwatch validate --log-file <path> [--json]` | Check every record against the packaged schema (required fields, types, `minLength`/`minimum`, no unexpected fields) — dependency-free, doesn't use `jsonschema` | `0` clean, `1` invalid records found, `2` error |
 | `llm-burnwatch dashboard --log-file <path> --out <path.html> [--fx-rate <rate> --currency <code>] [--since <date>] [--until <date>]` | Static single-file HTML report with a daily journal | `0` / `2` error |
 | `llm-burnwatch pricing import <file\|url>` | Import pricing from a local file or an `http(s)://` URL in LiteLLM's `model_prices_and_context_window.json` format, saved to `~/.config/llm-burnwatch/pricing.json` | `0` / `2` error |
+| `llm-burnwatch budget set --monthly <usd> --warn-at <0..1>` | Set a monthly USD budget and an early-warning fraction, saved to `~/.config/llm-burnwatch/budget.json` | `0` / `2` error |
+| `llm-burnwatch budget show` | Print the currently configured budget (or say none is set) | `0` |
 
 `report`/`dashboard`/`detect` all accept `--pricing-file <path>` to use a
 one-off pricing file for that single run. Absent that flag, pricing is
@@ -162,6 +164,26 @@ before v1.0.
 `dashboard` to records whose UTC calendar date falls in that range; records
 with a missing or unparseable `timestamp` are excluded whenever either bound
 is given.
+
+### Budget tracking (detection, not enforcement)
+
+`llm-burnwatch budget set --monthly 100 --warn-at 0.8` records a monthly USD
+budget and an early-warning fraction; once set, `report` prints a `budget:`
+section (month-to-date spend, a linear-pace forecast for month-end, and a
+status of "within budget" / "on pace to exceed" / "budget exceeded"), and
+`detect` gains a `budget` alert kind (`budget_pace_warning` /
+`budget_exceeded`) alongside the statistical detectors. Neither section
+appears at all until `budget set` has been run — no "budget: not configured"
+noise for scripts parsing this output. The forecast is a simple linear
+extrapolation ("month-to-date spend / days elapsed so far × days in month"),
+flagged as low-confidence for the first few days of a month, when there's too
+little data for the projection to mean much.
+
+This is **detection, not enforcement** — `budget`/`report`/`detect` only
+tell you the month is trending over budget; nothing here stops a call from
+happening or throws partway through a request. Wire `detect`'s exit code
+into your own alerting the same way you would for any other anomaly, same
+as the rest of this section.
 
 Exit codes are the integration contract for one-shot `detect`. `detect
 --follow` additionally supports pushing each newly triggered alert to a
@@ -283,7 +305,7 @@ recommending one of the above.
 
 `llm-burnwatch`'s zero-dependency core reads and writes local files and
 prints to stdout/stderr, and none of `report`/`demo-data`/`schema`/
-`validate`/`dashboard`/`detect`/`train` make a network call. There are two
+`validate`/`dashboard`/`detect`/`train`/`budget` make a network call. There are two
 opt-in exceptions, both off by default: `llm-burnwatch pricing import <url>`,
 which fetches a pricing file over `http(s)://` only when you explicitly run
 that command with a URL (a local file path never touches the network); and
