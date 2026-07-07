@@ -74,6 +74,12 @@ documented in this table and in SECURITY.md, gated by explicit CLI flags
 `CHANGELOG.md`'s `[0.9.1]` entry for why this corrects an earlier
 (`[0.8.0]`) plan to ship sinks behind a `[alerts]` extra.
 
+`import otel <file> --log-file <dest>` (0.9.4) is **not** in this table: unlike
+`pricing import <url>`, it deliberately accepts only a local file path, not an
+`http(s)://` URL -- reading an already-exported OTLP JSON/JSONL file never
+touches the network, and adding URL support wasn't asked for. Trivial to add
+later as an explicit opt-in flag if it ever is.
+
 Any future command that needs network access must be added to this table
 and to `test_core_commands_make_no_network_attempts`'s command list (so the
 no-network guarantee stays an enforced fact about the core, not just a
@@ -116,6 +122,11 @@ src/llm_burnwatch/
 ├── budget.py            load_budget()/save_budget(): user-level monthly
 │                        budget config (`budget set`/`show`, `BudgetDetector`),
 │                        same XDG path + atomic-write pattern as pricing.json
+├── otel_import.py       import_otel()/parse_otel_spans(): local-file-only
+│                        OTLP JSON/JSONL -> llm-burnwatch JSONL (`import
+│                        otel`), tolerant of both GenAI semconv attribute-
+│                        naming generations, same tolerant-parsing precedent
+│                        as pricing_import.parse_litellm_pricing
 ├── dashboard.py         render_dashboard(): static single-file HTML,
 │                        core-only (no scikit-learn)
 ├── cli.py               argparse wiring for all subcommands

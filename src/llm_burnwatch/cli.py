@@ -1,6 +1,6 @@
 """Command-line interface for llm-burnwatch.
 
-Nine subcommands:
+Ten subcommands:
   report          -- cost summary read back from a log
   demo-data       -- write a synthetic log with a known number of injected anomalies
   detect          -- baseline (+ optional ML cross-check) anomaly detection over a log
@@ -10,9 +10,10 @@ Nine subcommands:
   dashboard       -- write a static single-file HTML cost report with a daily journal
   pricing import  -- import pricing data from a local file or http(s):// URL
   budget set/show -- configure/inspect a monthly USD budget for detect/report
+  import otel     -- import an OpenTelemetry GenAI trace export (local file only) into a log
 
-`report`/`demo-data`/`schema`/`validate`/`dashboard`/`detect`/`train`/`budget`
-never make a network call. `detect` only imports scikit-learn indirectly, via
+`report`/`demo-data`/`schema`/`validate`/`dashboard`/`detect`/`train`/`budget`/
+`import otel` never make a network call. `detect` only imports scikit-learn indirectly, via
 `registry.load_model` deserializing (via `skops.io`) an existing model -- if
 none exists yet, `detect` runs baseline-only and never touches scikit-learn
 either. `train` imports `anomaly.train` (which imports scikit-learn at module
@@ -80,6 +81,7 @@ from .logreader import (
     parse_date,
     read_new_records,
 )
+from .otel_import import OtelImportError, import_otel
 from .pricing_import import PricingImportError, import_pricing
 from .sinks.exec_sink import ExecSink
 from .sinks.protocol import send_to_all
@@ -957,6 +959,17 @@ def cmd_pricing_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_otel(args: argparse.Namespace) -> int:
+    dest = Path(args.log_file)
+    try:
+        records = import_otel(args.source, dest)
+    except OtelImportError as exc:
+        error(str(exc))
+        return 2
+    print(f"imported {len(records)} call(s) to {dest}")
+    return 0
+
+
 def cmd_budget_set(args: argparse.Namespace) -> int:
     dest = user_budget_path()
     save_budget(dest, args.monthly, args.warn_at)
@@ -1322,6 +1335,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     budget_show_p = budget_sub.add_parser("show", help="Show the currently configured budget")
     budget_show_p.set_defaults(handler=cmd_budget_show)
+
+    import_p = subparsers.add_parser("import", help="Import call records from an external format")
+    import_sub = import_p.add_subparsers(dest="import_command", required=True)
+    import_otel_p = import_sub.add_parser(
+        "otel",
+        help="Import an OpenTelemetry GenAI trace export (OTLP JSON or JSONL, local file "
+        "only) into a llm-burnwatch log, computing cost via the same pricing.json used by "
+        "report/dashboard/detect",
+    )
+    import_otel_p.add_argument(
+        "source", help="Local file path to an OTLP JSON/JSONL trace export"
+    )
+    import_otel_p.add_argument(
+        "--log-file", required=True, help="llm-burnwatch log file to append the imported calls to"
+    )
+    import_otel_p.set_defaults(handler=cmd_import_otel)
 
     return parser
 

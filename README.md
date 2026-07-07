@@ -136,6 +136,7 @@ pip install -e ".[anomaly]"            # + train (IsolationForest, requires scik
 | `llm-burnwatch pricing import <file\|url>` | Import pricing from a local file or an `http(s)://` URL in LiteLLM's `model_prices_and_context_window.json` format, saved to `~/.config/llm-burnwatch/pricing.json` | `0` / `2` error |
 | `llm-burnwatch budget set --monthly <usd> --warn-at <0..1>` | Set a monthly USD budget and an early-warning fraction, saved to `~/.config/llm-burnwatch/budget.json` | `0` / `2` error |
 | `llm-burnwatch budget show` | Print the currently configured budget (or say none is set) | `0` |
+| `llm-burnwatch import otel <file> --log-file <dest>` | Import an OpenTelemetry GenAI trace export (OTLP JSON or JSONL, **local file only**) into a llm-burnwatch log | `0` / `2` error |
 
 `report`/`dashboard`/`detect` all accept `--pricing-file <path>` to use a
 one-off pricing file for that single run. Absent that flag, pricing is
@@ -214,6 +215,27 @@ block. Two `guard()` blocks with different `trace_id`s (even nested, even
 concurrent) track completely independent totals. `guard()` and
 `budget`/`BudgetDetector` solve different problems and compose freely —
 neither replaces the other.
+
+### Importing OpenTelemetry GenAI traces
+
+Already emitting [OpenTelemetry GenAI semantic-convention](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
+spans (e.g. via OpenLLMetry or another GenAI instrumentation)? `llm-burnwatch
+import otel <export-file> --log-file calls.jsonl` reads an OTLP JSON/JSONL
+trace export and appends the calls it can recognize to a llm-burnwatch log,
+computing cost the same way `log_call()` does (via `pricing.json`/`pricing
+import`). Only a **local file path** is accepted — unlike `pricing import
+<url>`, this does not fetch a URL; it's a one-time batch import you run
+against an export you already have on disk.
+
+Tolerant of both attribute-naming generations the spec has had in the wild —
+current (`gen_ai.request.model`, `gen_ai.usage.input_tokens`/`output_tokens`)
+and older/OpenLLMetry-style (`gen_ai.system`,
+`gen_ai.usage.prompt_tokens`/`completion_tokens`) — and of spans that carry no
+recognizable `gen_ai.*` attributes at all: a real trace export is expected to
+contain plenty of non-GenAI spans (HTTP handlers, DB calls, ...), which are
+silently skipped rather than treated as an error. A model missing from
+`pricing.json` imports at `cost_micros=0` with a one-time warning, rather than
+aborting the whole batch over one unrecognized model.
 
 Exit codes are the integration contract for one-shot `detect`. `detect
 --follow` additionally supports pushing each newly triggered alert to a

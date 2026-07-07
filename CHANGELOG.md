@@ -2,6 +2,42 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.4] - 2026-07-07
+
+### Added
+- `llm-burnwatch import otel <file> --log-file <dest>`: import an
+  OpenTelemetry GenAI semantic-convention trace export (OTLP JSON, a JSON
+  array of such exports, or JSONL -- one export object per line, as an OTel
+  Collector file exporter typically writes) into a llm-burnwatch JSONL log.
+  `source` must be a local file path -- unlike `pricing import <url>`, this
+  deliberately does not accept an `http(s)://` URL; it would be a second,
+  unrelated network boundary nothing asked for, trivial to add later as an
+  explicit opt-in flag if it's ever needed.
+- `otel_import.parse_otel_spans()`/`import_otel()`: tolerant of both
+  attribute-naming generations the GenAI semantic conventions have had in
+  the wild -- current (`gen_ai.request.model`,
+  `gen_ai.usage.input_tokens`/`output_tokens`) and older/OpenLLMetry-style
+  (`gen_ai.system`, `gen_ai.usage.prompt_tokens`/`completion_tokens`), current
+  name preferred when both are present on the same span. Spans lacking a
+  model or lacking both an input- and output-token count are silently
+  skipped -- the same tolerant-parsing precedent as
+  `pricing_import.parse_litellm_pricing`, since a real trace export is
+  expected to contain plenty of non-GenAI spans (HTTP handlers, DB calls,
+  ...). A model unresolvable in `pricing.json` imports at `cost_micros=0`
+  with a one-time-per-model warning rather than aborting the whole batch.
+- Each span's own `startTimeUnixNano` becomes the imported record's
+  `timestamp` (not the time of the import run), so historical data lands on
+  its real calendar date for `report --since`/`--until` and `BudgetDetector`.
+  `traceId` is passed through opaquely as `trace_id` (no decoding/re-encoding
+  attempted -- OTLP JSON trace/span IDs are inconsistently
+  base64-vs-hex-encoded across real-world exporters, and llm-burnwatch never
+  needs to interpret the value, only correlate on it).
+- Appends to `--log-file` rather than replacing it (it's a log other
+  processes may already be writing to, unlike `pricing.json`'s atomic
+  replace), creating parent directories and locking the file down to `0600`
+  the same way `CostTracker`'s own log file is, but only if the file didn't
+  already exist.
+
 ## [0.9.3] - 2026-07-07
 
 ### Added
