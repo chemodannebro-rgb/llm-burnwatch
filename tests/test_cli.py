@@ -95,6 +95,116 @@ def test_validate_command_missing_log_file_returns_exit_code_2(tmp_path, capsys)
     assert "[llm-burnwatch] error:" in captured.err
 
 
+def test_validate_command_without_log_file_or_alerts_returns_exit_code_2(capsys):
+    exit_code = main(["validate"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "--log-file is required unless --alerts is given" in captured.err
+
+
+def test_validate_alerts_on_valid_alert_json_reports_valid(tmp_path, capsys):
+    alerts_path = tmp_path / "alert.json"
+    alerts_path.write_text(
+        json.dumps(
+            {
+                "alert_schema_version": 1,
+                "call_count": 0,
+                "anomaly_count": 0,
+                "anomalies": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["validate", "--alerts", "--alerts-file", str(alerts_path)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert f"validated {alerts_path} against alert_schema.json" in captured.out
+    assert "valid" in captured.out
+
+
+def test_validate_alerts_on_invalid_alert_json_reports_errors_and_exits_1(tmp_path, capsys):
+    alerts_path = tmp_path / "alert.json"
+    # Missing the required "anomalies" field.
+    alerts_path.write_text(
+        json.dumps({"alert_schema_version": 1, "call_count": 0, "anomaly_count": 0}),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["validate", "--alerts", "--alerts-file", str(alerts_path)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "missing required field 'anomalies'" in captured.out
+
+
+def test_validate_alerts_json_flag_prints_machine_readable_summary(tmp_path, capsys):
+    alerts_path = tmp_path / "alert.json"
+    alerts_path.write_text(
+        json.dumps(
+            {
+                "alert_schema_version": 1,
+                "call_count": 0,
+                "anomaly_count": 0,
+                "anomalies": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        ["validate", "--alerts", "--alerts-file", str(alerts_path), "--json"]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload == {"valid": True, "errors": []}
+
+
+def test_validate_alerts_missing_alerts_file_flag_returns_exit_code_2(capsys):
+    exit_code = main(["validate", "--alerts"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "--alerts-file is required with --alerts" in captured.err
+
+
+def test_validate_alerts_missing_file_on_disk_returns_exit_code_2(tmp_path, capsys):
+    missing = tmp_path / "does-not-exist.json"
+    exit_code = main(["validate", "--alerts", "--alerts-file", str(missing)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "[llm-burnwatch] error:" in captured.err
+
+
+def test_validate_alerts_dogfoods_real_detect_json_output(tmp_path, capsys):
+    """The dogfooding test the QA review called for: a real `detect --json`
+    output, round-tripped through `validate --alerts`, must itself validate
+    as `valid` -- proving alert_schema.json actually matches what `detect`
+    produces, rather than trusting a hand-written fixture to stay in sync.
+    """
+    log_path = _demo_log(tmp_path, n_normal=20, n_anomalies=2)
+
+    detect_exit = main(
+        ["detect", "--log-file", str(log_path), "--model-dir", str(tmp_path / "models"), "--json"]
+    )
+    alert_json = capsys.readouterr().out
+    assert detect_exit in (0, 1)  # 1 just means anomalies were found, not a failure
+
+    alerts_path = tmp_path / "alert.json"
+    alerts_path.write_text(alert_json, encoding="utf-8")
+
+    exit_code = main(["validate", "--alerts", "--alerts-file", str(alerts_path)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "valid" in captured.out
+
+
 def test_demo_data_command_writes_log_and_reports_count(tmp_path, capsys):
     out_path = tmp_path / "out.jsonl"
     exit_code = main(["demo-data", "--out", str(out_path), "--n-normal", "5", "--n-anomalies", "1"])

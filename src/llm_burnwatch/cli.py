@@ -205,27 +205,33 @@ def _filter_report_records(records, args, counts: dict) -> Iterator[dict]:
         yield record
 
 
-def _budget_status_for(args: argparse.Namespace) -> dict | None:
-    """Budget status for `report`'s Budget section, or `None` if budget
-    tracking isn't configured (`budget.json` absent/unreadable) or no record
-    in the log falls in the current UTC calendar month yet -- in either case
-    the caller should omit the Budget section entirely rather than print a
-    "not configured" placeholder (quieter default for scripts parsing this
-    output). Deliberately reads the whole, unfiltered log regardless of
-    `--since`/`--until`/`--trace-id` -- budget tracking is about this
-    calendar month's actual spend, not whatever period the rest of `report`
-    was asked to summarize.
+def _budget_status_for(args: argparse.Namespace) -> tuple[dict | None, dict | None]:
+    """Budget status for `report`'s Budget section, returned as
+    `(status, budget_config)`.
+
+    `status` is `None` if budget tracking isn't configured (`budget.json`
+    absent/unreadable) OR if no record in the log falls in the current UTC
+    calendar month yet -- these are different situations for the caller:
+    the first should omit the Budget section entirely (quieter default for
+    scripts parsing this output), the second should still say budget
+    tracking is configured, just that there's nothing to report yet (see
+    `budget_config`, which is only non-`None` in the "configured" case, for
+    text-mode callers to distinguish the two). Deliberately reads the whole,
+    unfiltered log regardless of `--since`/`--until`/`--trace-id` -- budget
+    tracking is about this calendar month's actual spend, not whatever
+    period the rest of `report` was asked to summarize.
     """
     budget_config = load_budget(user_budget_path())
     if budget_config is None:
-        return None
+        return None, None
     try:
         records = list(iter_log_records(args.log_file))
     except FileNotFoundError:
-        return None
-    return compute_budget_status(
+        return None, budget_config
+    status = compute_budget_status(
         records, budget_config["monthly_usd"], budget_config["warn_at_fraction"]
     )
+    return status, budget_config
 
 
 def _print_budget_status(status: dict) -> None:
@@ -279,7 +285,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         _print_report_csv(result)
         return 0
 
-    budget_status = _budget_status_for(args)
+    budget_status, budget_config = _budget_status_for(args)
 
     if result["call_count"] == 0:
         if args.json:
@@ -297,6 +303,11 @@ def cmd_report(args: argparse.Namespace) -> int:
             print("no records found in log")
         if budget_status is not None:
             _print_budget_status(budget_status)
+        elif budget_config is not None:
+            print(
+                f"budget: configured (${budget_config['monthly_usd']:.2f}/month) "
+                "— no records this month yet"
+            )
         return 0
 
     if args.json:
@@ -332,6 +343,11 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(f"  {model}: ${micros / 1_000_000:.6f}")
     if budget_status is not None:
         _print_budget_status(budget_status)
+    elif budget_config is not None:
+        print(
+            f"budget: configured (${budget_config['monthly_usd']:.2f}/month) "
+            "— no records this month yet"
+        )
     return 0
 
 
@@ -1001,6 +1017,13 @@ def cmd_schema(args: argparse.Namespace) -> int:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
+    if args.alerts:
+        return _cmd_validate_alerts(args)
+
+    if not args.log_file:
+        error("--log-file is required unless --alerts is given")
+        return 2
+
     from importlib import resources
 
     from .validation import validate_record
@@ -1038,6 +1061,56 @@ def cmd_validate(args: argparse.Namespace) -> int:
             print(f"    {e}")
 
     return 1 if invalid else 0
+
+
+def _cmd_validate_alerts(args: argparse.Namespace) -> int:
+    """`validate --alerts`: check a `detect --json` output file (a single JSON
+    object, not the newline-delimited stream `detect --follow` produces)
+    against the packaged `alert_schema.json`, symmetric to how plain
+    `validate` checks a log against `schema.json`. Reuses `validate_record`
+    unchanged -- `alert_schema.json` uses the same small JSON-Schema subset
+    (`type`, `required`, `additionalProperties`) that validator already
+    understands.
+    """
+    from importlib import resources
+
+    from .validation import validate_record
+
+    if not args.alerts_file:
+        error("--alerts-file is required with --alerts")
+        return 2
+
+    try:
+        alerts_text = Path(args.alerts_file).read_text(encoding="utf-8")
+    except OSError as exc:
+        error(str(exc))
+        return 2
+
+    try:
+        alert = json.loads(alerts_text)
+    except json.JSONDecodeError as exc:
+        error(f"{args.alerts_file}: invalid JSON: {exc}")
+        return 2
+
+    schema_text = (
+        resources.files("llm_burnwatch").joinpath("alert_schema.json").read_text(encoding="utf-8")
+    )
+    schema = json.loads(schema_text)
+    errors = validate_record(alert, schema)
+
+    if args.json:
+        payload = {"valid": not errors, "errors": errors}
+        print(json.dumps(payload, indent=2))
+        return 1 if errors else 0
+
+    print(f"validated {args.alerts_file} against alert_schema.json")
+    if not errors:
+        print("valid")
+    else:
+        for e in errors:
+            print(f"    {e}")
+
+    return 1 if errors else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1288,9 +1361,24 @@ def build_parser() -> argparse.ArgumentParser:
     validate_p = subparsers.add_parser(
         "validate", help="Check a log's records against the packaged JSON schema"
     )
-    validate_p.add_argument("--log-file", required=True)
+    validate_p.add_argument(
+        "--log-file",
+        default=None,
+        help="Required unless --alerts is given",
+    )
     validate_p.add_argument(
         "--json", action="store_true", help="Print a machine-readable JSON summary"
+    )
+    validate_p.add_argument(
+        "--alerts",
+        action="store_true",
+        help="Validate a `detect --json` output file against alert_schema.json "
+        "instead of validating a log against schema.json",
+    )
+    validate_p.add_argument(
+        "--alerts-file",
+        default=None,
+        help="Path to a `detect --json` output file; required with --alerts",
     )
     validate_p.set_defaults(handler=cmd_validate)
 

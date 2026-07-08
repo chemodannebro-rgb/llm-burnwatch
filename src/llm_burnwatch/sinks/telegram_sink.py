@@ -14,8 +14,10 @@ the fixed `https://api.telegram.org/bot<token>/sendMessage` endpoint itself,
 so there's no non-http(s) scheme to reject here (the host is hard-coded, not
 caller-supplied). `bot_token` is embedded in that URL, exactly like a Slack
 incoming-webhook URL embeds its own secret -- so, like Slack, a delivery
-failure's `SinkError` message (which includes the URL) is only ever logged
-locally via `warn()`, never sent anywhere else.
+failure's `SinkError` message is only ever logged locally via `warn()`,
+never sent anywhere else, and (as of the redaction fix in `webhook_sink.py`)
+never includes the token-bearing path in the first place -- only
+`scheme://netloc` (`https://api.telegram.org`) is printed.
 """
 
 from __future__ import annotations

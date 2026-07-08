@@ -77,3 +77,59 @@ def test_bool_is_not_accepted_as_integer(schema):
     record = _valid_record(input_tokens=True)
     errors = validate_record(record, schema)
     assert any("input_tokens" in e and "expected type" in e for e in errors)
+
+
+@pytest.fixture
+def alert_schema():
+    text = (
+        resources.files("llm_burnwatch").joinpath("alert_schema.json").read_text(encoding="utf-8")
+    )
+    return json.loads(text)
+
+
+def _valid_alert(**overrides):
+    alert = {
+        "alert_schema_version": 1,
+        "call_count": 10,
+        "threshold": 3.5,
+        "anomaly_count": 0,
+        "anomalies": [],
+        "frequency_detector_enabled": True,
+        "cusum_detector_enabled": True,
+        "budget_detector_enabled": False,
+        "ml": None,
+    }
+    alert.update(overrides)
+    return alert
+
+
+def test_array_type_field_with_empty_list_has_no_errors(alert_schema):
+    # `_TYPE_MAP` previously had no "array" entry, so `anomalies: []` (a
+    # `list`) would spuriously fail its `"type": "array"` check.
+    assert validate_record(_valid_alert(), alert_schema) == []
+
+
+def test_array_type_field_with_populated_list_has_no_errors(alert_schema):
+    record = _valid_alert(anomalies=[{"index": 0}], anomaly_count=1)
+    assert validate_record(record, alert_schema) == []
+
+
+def test_boolean_type_field_is_accepted(alert_schema):
+    # `_TYPE_MAP` previously had no "boolean" entry, so a `True`/`False`
+    # value for a `"type": "boolean"` field would spuriously fail.
+    record = _valid_alert(frequency_detector_enabled=False)
+    assert validate_record(record, alert_schema) == []
+
+
+def test_number_type_field_accepts_int_and_float(alert_schema):
+    # `_TYPE_MAP` previously had no "number" entry, so `threshold` (a
+    # `"type": "number"` field) would spuriously fail for both ints and
+    # floats.
+    assert validate_record(_valid_alert(threshold=3.5), alert_schema) == []
+    assert validate_record(_valid_alert(threshold=3), alert_schema) == []
+
+
+def test_bool_is_not_accepted_as_number(alert_schema):
+    record = _valid_alert(threshold=True)
+    errors = validate_record(record, alert_schema)
+    assert any("threshold" in e and "expected type" in e for e in errors)

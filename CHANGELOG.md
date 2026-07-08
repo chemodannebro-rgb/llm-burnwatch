@@ -2,6 +2,65 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.0.0] - 2026-07-07
+
+Closes four debts identified by the post-v0.9.0 audit.
+
+### Security
+- `sinks/webhook_sink.py`: `SinkError` messages raised from `post_json()`
+  (shared by `WebhookSink`/`SlackSink`/`TelegramSink`) no longer include the
+  secret-bearing path of the target URL -- a Slack incoming-webhook path or a
+  Telegram `bot<token>/...` path was previously printed in full via `warn()`
+  on any delivery failure. A new `_redact_url()` helper keeps only
+  `scheme://netloc`. `URLError` handling now also uses `exc.reason` instead
+  of `str(exc)`, since the latter can itself embed the original request/URL.
+  Updated `telegram_sink.py`'s docstring, which previously (incorrectly)
+  documented `SinkError` as including the full URL.
+- `sinks/webhook_sink.py`: `post_json()` now rejects a followed HTTP
+  redirect that lands on a different host/port (`response.geturl()`'s
+  `netloc` differs from the configured URL's) or that downgrades
+  `https://` to a non-`https` scheme -- mirroring the check
+  `pricing_import.py`'s `_fetch_url()` already performs (that existing
+  protection was audited and confirmed correct; no code changes were needed
+  there). Deliberately does not add a custom `HTTPRedirectHandler`/opener,
+  since that would bypass the module-level `urlopen` monkeypatch the sink
+  test suite relies on.
+
+### Changed
+- `cli.py`'s `report`: when a budget *is* configured (`budget set` has been
+  run) but the log has no records yet in the current UTC calendar month,
+  text-mode output now prints a one-line
+  `budget: configured ($X.XX/month) -- no records this month yet` message,
+  distinguishing that case from "budget tracking isn't configured at all"
+  (previously both were silently identical -- no Budget section either way).
+  `--json` output is unchanged: the `"budget"` key is still only present
+  when there's an actual month-to-date status to report.
+
+### Added
+- `validate --alerts --alerts-file <path>`: validates a `detect --json`
+  output file (a single JSON object, not `detect --follow`'s streaming
+  format) against the packaged `alert_schema.json`, symmetric to plain
+  `validate`'s check of a log against `schema.json`. Closes the gap left
+  open in [0.8.6]. `--log-file` is now optional on `validate` (required
+  unless `--alerts` is given).
+- `alert_schema.json`: added `cusum_detector_enabled`/`level_shift_count`/
+  `level_shifts` and `budget_detector_enabled`/`budget_alert_count`/
+  `budget_alerts` -- these were already part of `detect --json`'s real
+  output (from the CUSUM and budget detectors) but had never been added to
+  the schema, which would have made every real `detect --json` output
+  invalid under its own schema on day one of `validate --alerts` existing.
+  Purely additive; `alert_schema_version` is not bumped.
+
+### Fixed
+- `validation.py`'s `_TYPE_MAP` had no entries for JSON Schema's `array`,
+  `boolean`, or `number` types -- harmless for `schema.json` (which never
+  uses them) but meant `validate_record()` would report a spurious type
+  mismatch for every array/boolean/number field in `alert_schema.json`
+  (`anomalies`, `frequency_detector_enabled`, `threshold`, ...), found while
+  building `validate --alerts`'s dogfooding test against a real `detect
+  --json` payload. `number` matches `(int, float)` while still excluding
+  `bool` from matching, the same way `integer` already did.
+
 ## [0.9.6] - 2026-07-07
 
 ### Added

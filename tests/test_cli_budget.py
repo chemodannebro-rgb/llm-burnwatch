@@ -189,6 +189,39 @@ def test_report_budget_section_shows_exceeded_status(tmp_path, capsys):
     assert "status: budget exceeded" in captured.out
 
 
+def test_report_shows_configured_no_records_this_month_line(tmp_path, capsys):
+    main(["budget", "set", "--monthly", "100", "--warn-at", "0.8"])
+    capsys.readouterr()
+
+    log_path = tmp_path / "calls.jsonl"
+    # A record from well outside the current UTC calendar month -- nothing
+    # falls into `compute_budget_status`'s month-to-date window.
+    _write_records(log_path, [1_000_000], timestamp="2020-01-01T00:00:00+00:00")
+
+    exit_code = main(["report", "--log-file", str(log_path)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "budget: configured ($100.00/month) — no records this month yet" in captured.out
+    assert "status:" not in captured.out  # no full _print_budget_status section
+
+
+def test_report_json_omits_budget_key_when_configured_but_no_records_this_month(
+    tmp_path, capsys
+):
+    main(["budget", "set", "--monthly", "100", "--warn-at", "0.8"])
+    capsys.readouterr()
+
+    log_path = tmp_path / "calls.jsonl"
+    _write_records(log_path, [1_000_000], timestamp="2020-01-01T00:00:00+00:00")
+
+    exit_code = main(["report", "--log-file", str(log_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert "budget" not in payload
+
+
 def test_report_omits_budget_section_when_budget_json_corrupt(tmp_path, capsys):
     path = user_budget_path()
     path.parent.mkdir(parents=True, exist_ok=True)

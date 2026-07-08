@@ -95,6 +95,45 @@
         }
       }
     },
+    "cusum_detector_enabled": {
+      "type": "boolean",
+      "description": "Whether CusumDetector actually ran for this call, after applying --cusum-detector on/off."
+    },
+    "level_shift_count": {"type": "integer", "minimum": 0},
+    "level_shifts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "group_key", "message", "evidence"],
+        "properties": {
+          "index": {"type": ["integer", "null"]},
+          "group_key": {"type": "array"},
+          "message": {"type": "string"},
+          "evidence": {"type": "object"}
+        }
+      }
+    },
+    "budget_detector_enabled": {
+      "type": "boolean",
+      "description": "Whether BudgetDetector actually ran for this call, i.e. whether `llm-burnwatch budget set` has been run."
+    },
+    "budget_alert_count": {"type": "integer", "minimum": 0},
+    "budget_alerts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "kind", "message", "evidence"],
+        "properties": {
+          "index": {"type": ["integer", "null"]},
+          "kind": {
+            "type": "string",
+            "enum": ["budget_pace_warning", "budget_exceeded"]
+          },
+          "message": {"type": "string"},
+          "evidence": {"type": "object"}
+        }
+      }
+    },
     "ml": {
       "description": "ML cross-check summary, or null if no trained model exists yet at --model-dir.",
       "type": ["object", "null"],

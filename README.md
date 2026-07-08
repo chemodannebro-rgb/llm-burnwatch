@@ -184,10 +184,17 @@ status of "within budget" / "on pace to exceed" / "budget exceeded"), and
 `detect` gains a `budget` alert kind (`budget_pace_warning` /
 `budget_exceeded`) alongside the statistical detectors. Neither section
 appears at all until `budget set` has been run — no "budget: not configured"
-noise for scripts parsing this output. The forecast is a simple linear
-extrapolation ("month-to-date spend / days elapsed so far × days in month"),
-flagged as low-confidence for the first few days of a month, when there's too
-little data for the projection to mean much.
+noise for scripts parsing this output. If a budget *is* configured but the
+log has no records yet in the current UTC calendar month, `report`'s text
+output prints a single line instead of the full section --
+`budget: configured ($100.00/month) — no records this month yet` -- so
+"not configured" and "configured, nothing to report yet" stay
+distinguishable; `--json` output is unaffected either way (the `"budget"`
+key is only ever present when there's an actual month-to-date status to
+report). The forecast is a simple linear extrapolation ("month-to-date
+spend / days elapsed so far × days in month"), flagged as low-confidence
+for the first few days of a month, when there's too little data for the
+projection to mean much.
 
 This is **detection, not enforcement** — `budget`/`report`/`detect` only
 tell you the month is trending over budget; nothing here stops a call from

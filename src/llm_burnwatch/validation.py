@@ -1,13 +1,22 @@
-"""Lightweight, dependency-free validator for llm-burnwatch's JSONL log schema.
+"""Lightweight, dependency-free validator for llm-burnwatch's JSON schemas.
 
 Deliberately does NOT import the `jsonschema` package (a `[dev]`-only
 dependency -- see ARCHITECTURE.md) so `llm-burnwatch validate` stays a core,
 zero-dependency command, the same guarantee `report`/`demo-data`/`detect`
 (without a trained model)/`schema`/`dashboard` already give. This module
-understands only the small subset of JSON Schema that `schema.json` actually
-uses: `type` (including `["string", "null"]` unions), `required`,
-`minLength`, `minimum`, and `additionalProperties: false`. It is not a
-general-purpose JSON Schema validator.
+understands only the small subset of JSON Schema that `schema.json` and
+`alert_schema.json` actually use: `type` (including multi-type unions like
+`["string", "null"]`), `required`, `minLength`, `minimum`, and
+`additionalProperties: false`. It is not a general-purpose JSON Schema
+validator.
+
+`_TYPE_MAP` covers `array`/`boolean`/`number` in addition to the
+`string`/`integer`/`object`/`null` types `schema.json` alone needed --
+`alert_schema.json` (added for `validate --alerts`) uses all three of those
+additional JSON Schema types (`anomalies`/`rule_violations`/... are arrays,
+`frequency_detector_enabled`/... are booleans, `threshold` is a number), so
+leaving them unmapped would make every one of those fields register as a
+spurious type mismatch.
 """
 
 from __future__ import annotations
@@ -15,7 +24,10 @@ from __future__ import annotations
 _TYPE_MAP = {
     "string": str,
     "integer": int,
+    "number": (int, float),
+    "boolean": bool,
     "object": dict,
+    "array": list,
     "null": type(None),
 }
 
@@ -25,10 +37,10 @@ def _type_matches(value, type_names: list[str]) -> bool:
         py_type = _TYPE_MAP.get(name)
         if py_type is None:
             continue
-        if py_type is int and isinstance(value, bool):
+        if name in ("integer", "number") and isinstance(value, bool):
             # JSON has no separate boolean-vs-integer distinction concern here,
-            # but Python's bool is a subclass of int -- schema.json's
-            # "integer" fields (input_tokens, cost_micros, ...) should never
+            # but Python's bool is a subclass of int -- "integer"/"number"
+            # fields (input_tokens, cost_micros, threshold, ...) should never
             # actually accept True/False, so treat bool as a type mismatch.
             continue
         if isinstance(value, py_type):
