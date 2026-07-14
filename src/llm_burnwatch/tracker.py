@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -171,6 +172,7 @@ class CostTracker:
         pricing_overrides: dict[str, dict] | None = None,
         max_bytes: int = 10 * 1024 * 1024,
         backup_count: int = 5,
+        request_id_dedup_window_seconds: float = 300.0,
     ) -> None:
         """`log_file`, if omitted, defaults to `default_log_path()`
         (`$XDG_DATA_HOME/llm-burnwatch/log.jsonl`, or
@@ -189,6 +191,12 @@ class CostTracker:
         is an error: `pricing` already fully determines the rate table, so
         layering `pricing_overrides` on top of an explicit `pricing` would
         silently ignore whichever one the caller didn't expect to lose.
+
+        `request_id_dedup_window_seconds` controls how long `log_call()`
+        remembers a `request_id` for the purpose of warning about a repeat
+        (see `log_call()`'s docstring) -- not a CLI flag, since `log_call()`
+        and the SDK-response adapters are this class's Python API, not
+        `detect --follow`-style CLI surface.
         """
         if pricing is not None and pricing_overrides is not None:
             raise ValueError(
@@ -202,6 +210,8 @@ class CostTracker:
         self._read_path = Path(log_file) if log_file is not None else default_log_path()
         self._write_path = self._resolve_write_path(self._read_path)
         self._guards: dict[str, _GuardState] = {}
+        self._request_id_dedup_window_seconds = request_id_dedup_window_seconds
+        self._seen_request_ids: dict[str, float] = {}
 
         try:
             self._write_path.parent.mkdir(parents=True, exist_ok=True)
@@ -383,6 +393,7 @@ class CostTracker:
         cost: float | None = None,
         pricing: dict | None = None,
         trace_id: str | None = None,
+        request_id: str | None = None,
         **extra: Any,
     ) -> dict:
         """Log one LLM/agent call.
@@ -393,6 +404,16 @@ class CostTracker:
         dollar amount that skips pricing lookup entirely (e.g. for
         image/audio/embedding calls not billed per-token). `pricing`, if
         given, overrides the pricing.json lookup for this call only.
+
+        `request_id`, if given, is an idempotency key for detecting this
+        *same* call being logged more than once (e.g. the caller's own retry
+        after a timeout) -- not to be confused with `trace_id`, which groups
+        multiple *different* calls into one logical request for `guard()`.
+        Seeing the same `request_id` again within
+        `request_id_dedup_window_seconds` (constructor arg, default 300s)
+        triggers a soft `warn()`, not a rejection: the record is still
+        written and the cost still counted, since silently dropping a call
+        that really did happen would misrepresent actual spend.
 
         Raises `BudgetExceededError` if `trace_id` matches an active
         `guard()` block whose `max_usd_per_trace`/`max_calls_per_trace` this
@@ -429,10 +450,30 @@ class CostTracker:
         }
         if trace_id is not None:
             record["trace_id"] = trace_id
+        if request_id is not None:
+            record["request_id"] = request_id
         if extra:
             record["extra"] = extra
 
         self._logger.info(json.dumps(record, separators=(",", ":")))
+
+        if request_id is not None:
+            now = time.monotonic()
+            window = self._request_id_dedup_window_seconds
+            self._seen_request_ids = {
+                seen_id: seen_at
+                for seen_id, seen_at in self._seen_request_ids.items()
+                if now - seen_at < window
+            }
+            last_seen = self._seen_request_ids.get(request_id)
+            if last_seen is not None:
+                warn(
+                    f"request_id {request_id!r} was already logged "
+                    f"{now - last_seen:.1f}s ago; logging it again anyway "
+                    "(this call's cost is still counted)."
+                )
+            self._seen_request_ids[request_id] = now
+
         self._enforce_guard(trace_id, cost_micros)
         return record
 
@@ -443,6 +484,7 @@ class CostTracker:
         label: str,
         model: str | None = None,
         trace_id: str | None = None,
+        request_id: str | None = None,
         **extra: Any,
     ) -> dict:
         """Adapter for an OpenAI SDK response object (or an equivalent
@@ -465,6 +507,7 @@ class CostTracker:
             output_tokens=output_tokens,
             cached_input_tokens=cached_tokens,
             trace_id=trace_id,
+            request_id=request_id,
             **extra,
         )
 
@@ -475,6 +518,7 @@ class CostTracker:
         label: str,
         model: str | None = None,
         trace_id: str | None = None,
+        request_id: str | None = None,
         **extra: Any,
     ) -> dict:
         """Adapter for an Anthropic SDK response object (or an equivalent
@@ -501,6 +545,7 @@ class CostTracker:
             output_tokens=output_tokens,
             cached_input_tokens=cache_read_tokens,
             trace_id=trace_id,
+            request_id=request_id,
             **extra,
         )
 
@@ -511,6 +556,7 @@ class CostTracker:
         label: str,
         model: str | None = None,
         trace_id: str | None = None,
+        request_id: str | None = None,
         **extra: Any,
     ) -> dict:
         """Adapter for a Gemini (`google-genai`) SDK response object (or an
@@ -537,6 +583,7 @@ class CostTracker:
             output_tokens=output_tokens,
             cached_input_tokens=cached_tokens,
             trace_id=trace_id,
+            request_id=request_id,
             **extra,
         )
 
@@ -547,6 +594,7 @@ class CostTracker:
         label: str,
         model: str | None = None,
         trace_id: str | None = None,
+        request_id: str | None = None,
         **extra: Any,
     ) -> dict:
         """Adapter for an Ollama response object (or an equivalent dict).
@@ -577,6 +625,7 @@ class CostTracker:
             output_tokens=output_tokens,
             cached_input_tokens=0,
             trace_id=trace_id,
+            request_id=request_id,
             **extra,
         )
 
@@ -587,6 +636,7 @@ class CostTracker:
         label: str,
         model: str | None = None,
         trace_id: str | None = None,
+        request_id: str | None = None,
         **extra: Any,
     ) -> dict:
         """Adapter for a LangChain chat model result (or an equivalent
@@ -643,6 +693,7 @@ class CostTracker:
             output_tokens=output_tokens,
             cached_input_tokens=cached_tokens,
             trace_id=trace_id,
+            request_id=request_id,
             **extra,
         )
 

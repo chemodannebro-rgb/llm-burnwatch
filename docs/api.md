@@ -26,6 +26,7 @@ CostTracker(
     pricing_overrides=None,  # point overrides on top of the built-in pricing.json
     max_bytes=10 * 1024 * 1024,
     backup_count=5,
+    request_id_dedup_window_seconds=300.0,
 )
 ```
 
@@ -35,12 +36,12 @@ for when to use which.
 
 | Method | Purpose |
 | --- | --- |
-| `log_call(*, label, model, input_tokens, output_tokens, cached_input_tokens=0, cost=None, pricing=None, trace_id=None, **extra)` | Log one call. Returns the JSONL record dict that was written. |
-| `log_openai_response(response, *, label, model=None, trace_id=None, **extra)` | Adapter: reads `response.usage` (OpenAI SDK shape or an equivalent dict). |
-| `log_anthropic_response(response, *, label, model=None, trace_id=None, **extra)` | Adapter: reads `response.usage` (Anthropic SDK shape). |
-| `log_gemini_response(response, *, label, model=None, trace_id=None, **extra)` | Adapter: reads `response.usage_metadata` (`google-genai` SDK shape). |
-| `log_ollama_response(response, *, label, model=None, trace_id=None, **extra)` | Adapter: reads `prompt_eval_count`/`eval_count` directly off the response (Ollama has no `usage` object). Pass the final streamed chunk, not an intermediate one. |
-| `log_langchain_result(result, *, label, model=None, trace_id=None, **extra)` | Adapter: reads `result.usage_metadata` (current LangChain) or falls back to `result.llm_output["token_usage"]` (older `LLMResult`). |
+| `log_call(*, label, model, input_tokens, output_tokens, cached_input_tokens=0, cost=None, pricing=None, trace_id=None, request_id=None, **extra)` | Log one call. Returns the JSONL record dict that was written. |
+| `log_openai_response(response, *, label, model=None, trace_id=None, request_id=None, **extra)` | Adapter: reads `response.usage` (OpenAI SDK shape or an equivalent dict). |
+| `log_anthropic_response(response, *, label, model=None, trace_id=None, request_id=None, **extra)` | Adapter: reads `response.usage` (Anthropic SDK shape). |
+| `log_gemini_response(response, *, label, model=None, trace_id=None, request_id=None, **extra)` | Adapter: reads `response.usage_metadata` (`google-genai` SDK shape). |
+| `log_ollama_response(response, *, label, model=None, trace_id=None, request_id=None, **extra)` | Adapter: reads `prompt_eval_count`/`eval_count` directly off the response (Ollama has no `usage` object). Pass the final streamed chunk, not an intermediate one. |
+| `log_langchain_result(result, *, label, model=None, trace_id=None, request_id=None, **extra)` | Adapter: reads `result.usage_metadata` (current LangChain) or falls back to `result.llm_output["token_usage"]` (older `LLMResult`). |
 | `guard(*, trace_id=None, max_usd_per_trace=None, max_calls_per_trace=None)` | Context manager; raises `BudgetExceededError` from the `log_call()`/adapter call that pushes a matching-`trace_id` trace over the given limit. In-process, per-trace enforcement — not the same mechanism as `budget`/`BudgetDetector` (cross-process, month-long, post-hoc). See [budget vs guard()](budget-vs-guard.md). |
 | `report()` | Returns the same structured summary as `llm-burnwatch report --json` for this instance's log (zeros/empty breakdowns on an empty log, not an error). |
 | `total_cost()` | Shortcut for `report()["total_cost_usd"]`. |
@@ -48,6 +49,14 @@ for when to use which.
 Each SDK adapter ends by calling `log_call(...)` — every adapter can raise
 `BudgetExceededError` the same way `log_call()` does if a matching
 `guard()` block is active.
+
+`request_id` is not the same thing as `trace_id`: `trace_id` groups several
+*different* calls into one logical request for `guard()`'s budget
+enforcement, while `request_id` is an idempotency key for detecting the
+*same* call being logged twice — e.g. your own retry after a timeout.
+Seeing the same `request_id` again within `request_id_dedup_window_seconds`
+(constructor arg, default 300s) only triggers a warning; the record is
+still written and the cost is still counted.
 
 ### `BudgetExceededError`
 

@@ -76,6 +76,10 @@ llm-burnwatch pricing import https://raw.githubusercontent.com/BerriAI/litellm/m
 
 ## Уже отправляете трассировки OpenTelemetry GenAI?
 
+**Коротко:** если ваше приложение уже отправляет трассировки OpenTelemetry
+GenAI, писать код трекера не нужно вообще — одна команда читает уже
+имеющийся экспорт и превращает его в лог.
+
 Если ваше приложение уже испускает спаны по
 [семантическим соглашениям OpenTelemetry GenAI](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 (например через OpenLLMetry или другую GenAI-инструментацию), вам вообще не
@@ -117,7 +121,8 @@ python examples/e2e_actions_demo.py
 ## Формат лога
 
 Каждая строка лога — один JSON-объект; полный контракт (обязательные поля,
-типы, необязательные поля вроде `cached_input_tokens`/`trace_id`) описан в
+типы, необязательные поля вроде `cached_input_tokens`/`trace_id`/
+`request_id`) описан в
 `src/llm_burnwatch/schema.json`, доступен также через `llm-burnwatch schema`.
 Это источник истины для любого не-Python клиента (Node.js, Go...), который
 хочет писать совместимый лог — каждая запись несёт `schema_version` на

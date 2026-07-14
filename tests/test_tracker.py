@@ -6,6 +6,7 @@ import stat
 
 import pytest
 
+import llm_burnwatch.tracker as tracker_module
 from llm_burnwatch.logreader import iter_log_records
 from llm_burnwatch.tracker import (
     CostTracker,
@@ -336,3 +337,96 @@ def test_log_ollama_response_adapter_handles_missing_eval_count(tmp_path):
     assert record["input_tokens"] == 0
     assert record["output_tokens"] == 0
     assert record["cached_input_tokens"] == 0
+
+
+def test_log_call_records_request_id_when_given(tmp_path):
+    tracker = CostTracker(tmp_path / "calls.jsonl")
+    record = tracker.log_call(
+        label="x", model="gpt-4o", input_tokens=1, output_tokens=1, request_id="req-1"
+    )
+    assert record["request_id"] == "req-1"
+
+
+def test_log_call_omits_request_id_when_not_given(tmp_path):
+    tracker = CostTracker(tmp_path / "calls.jsonl")
+    record = tracker.log_call(label="x", model="gpt-4o", input_tokens=1, output_tokens=1)
+    assert "request_id" not in record
+
+
+def test_log_call_warns_but_does_not_raise_on_duplicate_request_id_within_window(tmp_path, capsys):
+    tracker = CostTracker(tmp_path / "calls.jsonl")
+    tracker.log_call(
+        label="x", model="gpt-4o", input_tokens=1, output_tokens=1, request_id="req-1"
+    )
+    record = tracker.log_call(
+        label="x", model="gpt-4o", input_tokens=1, output_tokens=1, request_id="req-1"
+    )
+
+    # The record is still written and the cost still counted -- a duplicate
+    # request_id is a soft warning, never a rejection.
+    assert record["request_id"] == "req-1"
+    report = tracker.report()
+    assert report["call_count"] == 2
+
+    captured = capsys.readouterr()
+    assert "request_id 'req-1' was already logged" in captured.err
+
+
+def test_log_call_does_not_warn_on_duplicate_request_id_after_window_expires(
+    tmp_path, capsys, monkeypatch
+):
+    tracker = CostTracker(tmp_path / "calls.jsonl", request_id_dedup_window_seconds=60.0)
+    fake_now = [1000.0]
+    monkeypatch.setattr(tracker_module.time, "monotonic", lambda: fake_now[0])
+
+    tracker.log_call(
+        label="x", model="gpt-4o", input_tokens=1, output_tokens=1, request_id="req-1"
+    )
+    fake_now[0] += 61.0  # past the 60s dedup window
+    tracker.log_call(
+        label="x", model="gpt-4o", input_tokens=1, output_tokens=1, request_id="req-1"
+    )
+
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "method,response",
+    [
+        (
+            "log_openai_response",
+            {"model": "gpt-4o", "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+        ),
+        (
+            "log_anthropic_response",
+            {
+                "model": "claude-sonnet-4",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+        ),
+        (
+            "log_gemini_response",
+            {
+                "model_version": "gemini-1.5-pro",
+                "usage_metadata": {"prompt_token_count": 10, "candidates_token_count": 5},
+            },
+        ),
+        (
+            "log_ollama_response",
+            {"model": "llama3", "prompt_eval_count": 10, "eval_count": 5},
+        ),
+        (
+            "log_langchain_result",
+            {
+                "usage_metadata": {"input_tokens": 10, "output_tokens": 5},
+                "response_metadata": {"model_name": "gpt-4o"},
+            },
+        ),
+    ],
+)
+def test_adapters_forward_request_id_to_log_call(tmp_path, method, response):
+    tracker = CostTracker(tmp_path / "calls.jsonl")
+    record = getattr(tracker, method)(
+        response, label="chat", cost=0.0, request_id="req-1"
+    )
+    assert record["request_id"] == "req-1"

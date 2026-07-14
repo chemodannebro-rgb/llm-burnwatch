@@ -11,7 +11,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from llm_burnwatch.tracker import CostTracker
+from llm_burnwatch import CostTracker
 
 
 def main() -> None:

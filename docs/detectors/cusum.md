@@ -1,5 +1,24 @@
 # CUSUM (level-shift) detector
 
+**Catches:** a sustained, cumulative rise in a group's `output_tokens` or
+`cost_micros` relative to its own reference median — e.g. a prompt change
+that quietly makes every response longer/pricier. This is a level shift
+that no single call's own z-score would necessarily trip, because each
+individual call can stay under the [baseline detector's](baseline.md)
+threshold while still being part of a real, sustained shift.
+
+**Fires when:** after several calls in a row run longer or cost more than
+usual — not on the first one. This detector deliberately waits for a
+sustained pattern before flagging it, so one unlucky call won't trip it.
+
+**What to do:** compare the prompt/code from before and after the flagged
+record (`report --json` shows whether the rise is still continuing).
+
+**Always available, no dependencies. Enabled by default** — unlike the
+[frequency detector](frequency.md), a sustained rise in tokens/cost isn't
+subject to the same "every Monday morning" seasonal false-positive risk, so
+there's no reason to ship it off.
+
 > **Terminology note:** `detect`'s plain-text console output calls this a
 > **"gradual cost increase"** rather than "level shift" — same detector,
 > same alert, just a friendlier surface name for people who think in
@@ -8,19 +27,7 @@
 > using "level shift" throughout because it's the more precise technical
 > term for what the math below actually detects.
 
-**Catches:** a sustained, cumulative rise in a group's `output_tokens` or
-`cost_micros` relative to its own reference median — e.g. a prompt change
-that quietly makes every response longer/pricier. This is a level shift
-that no single call's own z-score would necessarily trip, because each
-individual call can stay under the [baseline detector's](baseline.md)
-threshold while still being part of a real, sustained shift.
-
-**Always available, no dependencies. Enabled by default** — unlike the
-[frequency detector](frequency.md), a sustained rise in tokens/cost isn't
-subject to the same "every Monday morning" seasonal false-positive risk, so
-there's no reason to ship it off.
-
-## The math
+## How this works under the hood
 
 A one-sided tabular CUSUM (Page, 1954; Montgomery, *Introduction to
 Statistical Quality Control*) over `output_tokens` and `cost_micros`

@@ -5,6 +5,14 @@ monthly budget, or is on pace to exceed it by month-end. Like the
 [rules detector](rules.md), this is your own explicit policy, not a
 statistical threshold.
 
+**Fires when:** this month's spend has already gone over your configured
+budget, or is on pace to by month's end. Only active once you've actually
+set a budget — silent otherwise.
+
+**What to do:** check `report`'s budget section for the breakdown by label
+and model to see where the spend is coming from, then decide whether to
+cut usage or raise the budget.
+
 **Always available, no dependencies. Disabled by default** — stays a
 deliberate no-op until you've actually run `budget set`; `detect` only
 turns it on once `budget.json` exists.

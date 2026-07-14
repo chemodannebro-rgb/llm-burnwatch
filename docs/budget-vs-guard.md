@@ -3,6 +3,12 @@
 llm-burnwatch has two ways to think about "am I spending too much", solving
 different problems. Neither replaces the other, and they compose freely.
 
+**In plain terms:** `budget` is a watchman that looks at the whole month
+and tells you after the fact if you're overspending. `guard()` is a wall
+that stops a single run from blowing past its own limit right now, in real
+time. Use `budget` to know the month is trending badly; use `guard()` to
+actually stop a runaway loop before it racks up more cost.
+
 | | `budget`/`BudgetDetector` | `CostTracker.guard()` |
 |---|---|---|
 | **Trade-off** | Detection | Enforcement |

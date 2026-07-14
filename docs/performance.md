@@ -6,6 +6,9 @@ thresholds that matter for real usage until this page. Numbers below come
 from `scripts/bench.py` and `scripts/soak_follow.py` (dev-only, not part of
 the installed package) run against this release.
 
+If you don't have anywhere near a million records a day, this page
+probably isn't something you need to worry about right now.
+
 ## Methodology
 
 - Hardware/software: `macOS-26.3-arm64-arm-64bit`, Python 3.9.6, Apple

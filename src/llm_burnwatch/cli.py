@@ -50,6 +50,7 @@ from typing import Iterator
 
 from . import __version__
 from ._messages import error, warn
+from .alert_cooldown import RULES_AGGREGATION_FLUSH_SECONDS, aggregate_rules_alerts, apply_cooldown
 from .alert_text import (
     _CONSOLE_NEXT_STEP_HINTS,
     _HUMAN_FEATURE_NAMES,
@@ -147,6 +148,13 @@ def _positive_float(value: str) -> float:
     parsed = float(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError(f"must be a positive number, got {value!r}")
+    return parsed
+
+
+def _non_negative_float(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"must be a non-negative number, got {value!r}")
     return parsed
 
 
@@ -877,7 +885,14 @@ def cmd_detect(args: argparse.Namespace) -> int:
         },
     )
 
-    anomalous = [(a.record_ref, a) for a in alerts if a.kind == "zscore_outlier"]
+    # baseline_detector always sets record_ref to a plain int for
+    # zscore_outlier alerts -- the `is not None` filter is for mypy's benefit
+    # (Alert.record_ref is Optional[int] generically), not a behavior change.
+    anomalous = [
+        (a.record_ref, a)
+        for a in alerts
+        if a.kind == "zscore_outlier" and a.record_ref is not None
+    ]
     insufficient_count = sum(1 for a in alerts if a.kind == "insufficient_data")
     # Hard-limit violations from RulesDetector -- a distinct, additive
     # concern from the baseline z-score's statistical "anomalies" above,
@@ -1025,20 +1040,24 @@ def _detect_follow_poll(
     offsets: dict[str, int],
     window: deque,
     args: argparse.Namespace,
-) -> tuple[list, dict[str, int], bool]:
+) -> tuple[list, list, dict[str, int], bool]:
     """Run a single `--follow` poll: read whatever's new in `log_path` since
     `offsets`, fold it into `window` (mutated in place, evicting the oldest
     records past `FOLLOW_WINDOW_SIZE`), and re-run the detector registry over
     the resulting window.
 
-    Returns `(new_alerts, updated_offsets, had_new_records)`. `new_alerts` is
-    restricted to alerts whose `record_ref` falls at or after the index the
-    newly arrived records start at -- since a `deque`'s `maxlen` only ever
-    evicts from the *left*, that index cleanly separates "already surfaced
-    in an earlier poll" from "triggered by data that arrived just now"
-    without needing a stable identity per record across polls. `had_new_records`
-    tells the caller whether state actually changed and needs saving, even
-    when this poll happened to produce zero alerts.
+    Returns `(new_alerts, all_alerts, updated_offsets, had_new_records)`.
+    `new_alerts` is restricted to alerts whose `record_ref` falls at or
+    after the index the newly arrived records start at -- since a `deque`'s
+    `maxlen` only ever evicts from the *left*, that index cleanly separates
+    "already surfaced in an earlier poll" from "triggered by data that
+    arrived just now" without needing a stable identity per record across
+    polls. `all_alerts` is the unfiltered set this same poll produced --
+    kept only so `alert_cooldown.apply_cooldown` can track continuity for a
+    key that's still triggering on old records (and therefore absent from
+    `new_alerts`) without mistaking that for the incident having ended.
+    `had_new_records` tells the caller whether state actually changed and
+    needs saving, even when this poll happened to produce zero alerts.
 
     This filter only works if a detector's `record_ref` points at the most
     recent record that contributed to the alert. `FrequencyDetector` used to
@@ -1054,7 +1073,7 @@ def _detect_follow_poll(
         warn(f"skipped {corrupt_count} corrupt log line(s) this poll")
 
     if not new_records:
-        return [], offsets, False
+        return [], [], offsets, False
 
     window.extend(new_records)
     records = list(window)
@@ -1075,7 +1094,7 @@ def _detect_follow_poll(
     new_alerts = [
         a for a in alerts if a.record_ref is not None and a.record_ref >= new_start_index
     ]
-    return new_alerts, offsets, True
+    return new_alerts, alerts, offsets, True
 
 
 def _build_sinks(args: argparse.Namespace) -> list:
@@ -1139,10 +1158,12 @@ def _run_detect_follow(args: argparse.Namespace) -> int:
     seen records, and print each newly triggered alert as one JSON object
     per line to stdout as soon as it's found (see `_detect_follow_poll`).
 
-    State (per-file byte offsets already consumed, and the current window)
+    State (per-file byte offsets already consumed, the current window, the
+    monotonic poll counter, and alert-cooldown/rules-aggregation bookkeeping)
     persists to `follow_state.state_path_for(args.log_file)` between runs,
     so stopping and restarting `--follow` resumes rather than re-scanning
-    the whole log or missing what arrived while it wasn't running.
+    the whole log, missing what arrived while it wasn't running, or letting
+    a restart re-open cooldown windows an alert storm was just suppressed by.
 
     Deliberately out of scope for this streaming mode (unlike one-shot
     `detect`): the ML cross-check (`_run_ml_cross_check` loads a model
@@ -1151,17 +1172,26 @@ def _run_detect_follow(args: argparse.Namespace) -> int:
     identically almost every poll). Runs until interrupted (Ctrl+C), then
     exits `0`.
 
-    If `--webhook-url`/`--slack-webhook-url`/`--telegram-bot-token`+
-    `--telegram-chat-id`/`--exec-sink` are given, each newly triggered alert
-    is also pushed to those sinks (see `_build_sinks`, `sinks/protocol.py`)
-    after being printed -- a sink failure is warned about and never stops the
-    poll loop or the other sinks.
+    Every newly triggered alert is printed to stdout on every poll,
+    regardless of cooldown -- cooldown (`--alert-cooldown-minutes`, see
+    `alert_cooldown.py`) only governs what's pushed to sinks
+    (`--webhook-url`/`--slack-webhook-url`/`--telegram-bot-token`+
+    `--telegram-chat-id`/`--exec-sink`, see `_build_sinks`,
+    `sinks/protocol.py`), so a script/audit trail reading stdout still sees
+    every detection. `rules` alerts (real money/policy violations, always
+    `severity="critical"`) are never cooldown-suppressed for sinks either --
+    they're aggregated into a periodic summary instead (see
+    `alert_cooldown.aggregate_rules_alerts`). A sink failure is warned about
+    and never stops the poll loop or the other sinks.
     """
     log_path = Path(args.log_file)
     state_path = state_path_for(log_path)
     state = load_follow_state(state_path)
     window: deque = deque(state["window"], maxlen=FOLLOW_WINDOW_SIZE)
     offsets: dict[str, int] = state["offsets"]
+    poll_seq: int = state["poll_seq"]
+    cooldown_state: dict = state["alert_cooldowns"]
+    rules_aggregation_state: dict = state["rules_aggregation"]
     sinks = _build_sinks(args)
 
     warn(
@@ -1172,16 +1202,50 @@ def _run_detect_follow(args: argparse.Namespace) -> int:
 
     try:
         while True:
-            new_alerts, offsets, had_new_records = _detect_follow_poll(
+            new_alerts, all_alerts, offsets, had_new_records = _detect_follow_poll(
                 log_path, offsets, window, args
             )
             if new_alerts:
                 for a in new_alerts:
                     _print_follow_alert(a)
-                    send_to_all(sinks, a)
                 sys.stdout.flush()
+
             if had_new_records:
-                save_follow_state(state_path, {"offsets": offsets, "window": list(window)})
+                poll_seq += 1
+                now = time.time()
+
+                rules_alerts = [a for a in new_alerts if a.detector == "rules"]
+                other_alerts = [a for a in new_alerts if a.detector != "rules"]
+                other_all_alerts = [a for a in all_alerts if a.detector != "rules"]
+
+                to_send_other, cooldown_state = apply_cooldown(
+                    other_alerts,
+                    other_all_alerts,
+                    cooldown_state,
+                    poll_seq,
+                    args.alert_cooldown_minutes,
+                    now,
+                )
+                to_send_rules, rules_aggregation_state = aggregate_rules_alerts(
+                    rules_alerts,
+                    rules_aggregation_state,
+                    args.alert_cooldown_minutes,
+                    RULES_AGGREGATION_FLUSH_SECONDS,
+                    now,
+                )
+                for a in to_send_other + to_send_rules:
+                    send_to_all(sinks, a)
+
+                save_follow_state(
+                    state_path,
+                    {
+                        "offsets": offsets,
+                        "window": list(window),
+                        "poll_seq": poll_seq,
+                        "alert_cooldowns": cooldown_state,
+                        "rules_aggregation": rules_aggregation_state,
+                    },
+                )
 
             time.sleep(args.poll_interval)
     except KeyboardInterrupt:
@@ -1639,6 +1703,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_float,
         default=5.0,
         help="Seconds between polls in --follow mode (default: 5.0)",
+    )
+    detect_p.add_argument(
+        "--alert-cooldown-minutes",
+        type=_non_negative_float,
+        default=15.0,
+        help=(
+            "--follow only: once a given (detector, kind, group_key) alert has "
+            "been sent to sinks, suppress re-sending it for this many minutes as "
+            "long as it keeps triggering on every poll without a gap (a gap means "
+            "the next occurrence is treated as a fresh incident and sent right "
+            "away). Sent again immediately, regardless of the cooldown, if its "
+            "magnitude roughly doubles relative to the last alert actually sent. "
+            "rules violations are never cooldown-suppressed -- they're aggregated "
+            "into a summary at most once a minute instead. 0 disables cooldown "
+            "entirely (default: 15.0)"
+        ),
     )
     detect_p.add_argument(
         "--webhook-url",

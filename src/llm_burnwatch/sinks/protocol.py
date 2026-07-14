@@ -17,10 +17,18 @@ remember to wrap `sink.send()` in its own try/except.
 
 from __future__ import annotations
 
+import time
 from typing import Protocol, Sequence
 
 from .._messages import warn
 from ..detectors.protocol import Alert
+
+# Simple, uniform retry policy (no distinction by exception type or HTTP
+# status) -- a transient network error/5xx shouldn't lose an alert forever,
+# but this deliberately doesn't try to be smarter than "retry a few times
+# with exponential backoff", per the scope this was asked for.
+SINK_RETRY_ATTEMPTS = 3
+SINK_RETRY_BASE_DELAY_SECONDS = 1.0
 
 
 class SinkError(Exception):
@@ -41,12 +49,19 @@ class Sink(Protocol):
 def send_to_all(sinks: Sequence[Sink], alert: Alert) -> None:
     """Send `alert` to every sink in `sinks`, in order.
 
-    Any exception raised by one sink's `send()` is caught, reported via
-    `warn()`, and does not stop the remaining sinks from being tried for the
-    same alert.
+    Each sink gets up to `SINK_RETRY_ATTEMPTS` attempts with exponential
+    backoff (`SINK_RETRY_BASE_DELAY_SECONDS * 2 ** attempt_index` between
+    attempts) before being given up on. Any exception still raised after the
+    last attempt is caught, reported via `warn()`, and does not stop the
+    remaining sinks from being tried for the same alert.
     """
     for sink in sinks:
-        try:
-            sink.send(alert)
-        except Exception as exc:  # noqa: BLE001 - a sink must never crash --follow
-            warn(f"sink {sink.name!r} failed to deliver alert: {exc}")
+        for attempt_index in range(SINK_RETRY_ATTEMPTS):
+            try:
+                sink.send(alert)
+                break
+            except Exception as exc:  # noqa: BLE001 - a sink must never crash --follow
+                if attempt_index == SINK_RETRY_ATTEMPTS - 1:
+                    warn(f"sink {sink.name!r} failed to deliver alert: {exc}")
+                else:
+                    time.sleep(SINK_RETRY_BASE_DELAY_SECONDS * (2**attempt_index))

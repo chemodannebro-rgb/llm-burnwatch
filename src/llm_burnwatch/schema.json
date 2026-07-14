@@ -58,6 +58,10 @@
       "type": ["string", "null"],
       "description": "Optional identifier grouping multiple related calls belonging to one logical agent request (e.g. retrieval + generation + tool-call)."
     },
+    "request_id": {
+      "type": ["string", "null"],
+      "description": "Optional idempotency key for this specific call, distinct from trace_id: trace_id groups multiple different calls into one logical request, while request_id identifies the same call being logged more than once (e.g. the caller's own retry after a timeout). Passing the same request_id twice within CostTracker's dedup window triggers a soft warning, not a rejection."
+    },
     "extra": {
       "type": "object",
       "description": "Optional free-form metadata passed by the caller (e.g. workflow_id, chunk_id). Long string fields (>200 chars) trigger a one-time content-leak warning."

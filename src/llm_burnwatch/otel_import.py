@@ -115,9 +115,13 @@ def _first_present(attrs: dict[str, Any], names: tuple[str, ...]) -> Any:
 def _span_timestamp(span: dict) -> str:
     nanos = span.get("startTimeUnixNano")
     try:
-        return datetime.fromtimestamp(int(nanos) / 1_000_000_000, tz=timezone.utc).isoformat(
-            timespec="seconds"
-        )
+        # nanos may be None/non-numeric for a malformed span -- int() raising
+        # TypeError/ValueError is exactly the fallback path below, so a
+        # missing/bad field is handled deliberately, not a type bug.
+        return datetime.fromtimestamp(
+            int(nanos) / 1_000_000_000,  # type: ignore[arg-type]
+            tz=timezone.utc,
+        ).isoformat(timespec="seconds")
     except (TypeError, ValueError):
         return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

@@ -13,13 +13,13 @@ scoring. Langfuse is an observability platform built around the prompt and
 completion content itself.
 
 **Use llm-burnwatch when** you specifically don't want prompt/completion
-content leaving the machine, or stored at all — llm-burnwatch only records
-cost/token metadata per call (label, model, token counts, cost), never the
-prompt or completion text, and never sends anything over the network
-except the two explicit, opt-in exceptions documented in
-[Security model](security.md). If you need both cost anomaly detection
-*and* full trace evals, nothing stops you running both against the same
-calls — they don't compete for the same log format or storage.
+content leaving the machine, or stored at all. llm-burnwatch only records
+cost/token metadata per call (label, model, token counts, cost) — never
+the prompt or completion text, and never over the network except the two
+explicit, opt-in exceptions documented in [Security model](security.md).
+If you need both cost anomaly detection *and* full trace evals, nothing
+stops you running both against the same calls — they don't compete for
+the same log format or storage.
 
 ## llm-burnwatch vs. LiteLLM
 
@@ -32,10 +32,10 @@ the request path.
 request path at all — llm-burnwatch is a logging call you add after the
 fact, not a proxy. If you're already using LiteLLM, note that
 `litellm.completion(...)`'s `ModelResponse` already works directly with
-`log_openai_response()` — no separate adapter needed — and
-`pricing import` happens to reuse LiteLLM's own pricing-data *format* for
-convenience. That shared format is the only connection between the two
-projects; llm-burnwatch doesn't depend on LiteLLM's proxy or SDK.
+`log_openai_response()` — no separate adapter needed. `pricing import`
+also happens to reuse LiteLLM's own pricing-data *format* for
+convenience, but that shared format is the only connection between the
+two projects; llm-burnwatch doesn't depend on LiteLLM's proxy or SDK.
 
 ## llm-burnwatch vs. Helicone
 

@@ -74,6 +74,10 @@ what that does and doesn't protect against.
 
 ## Already emitting OpenTelemetry GenAI traces?
 
+**In short:** if your app already emits OpenTelemetry GenAI traces, skip
+writing any tracker code — one command reads the export you already have
+and turns it into a log.
+
 If your app already emits [OpenTelemetry GenAI semantic-convention](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 spans (e.g. via OpenLLMetry or another GenAI instrumentation), you don't
 need to add `CostTracker` calls at all — import the export you already
@@ -115,7 +119,8 @@ python examples/e2e_actions_demo.py
 ## Log format
 
 Each line of the log is one JSON object; the full contract (required
-fields, types, optional fields like `cached_input_tokens`/`trace_id`) is
+fields, types, optional fields like `cached_input_tokens`/`trace_id`/
+`request_id`) is
 `src/llm_burnwatch/schema.json`, also available via `llm-burnwatch schema`. This is
 the source of truth for any non-Python client (Node.js, Go, ...) that wants
 to write a compatible log — every record also carries `schema_version` for

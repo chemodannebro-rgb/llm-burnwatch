@@ -5,9 +5,17 @@
 output length, a model swap that quietly changed pricing, a one-off
 runaway response.
 
+**Fires when:** the very next call that's out of line with its own history —
+no waiting period, a single unusual call is enough (once there's a handful
+of prior calls to compare it against).
+
+**What to do:** look at what happened right around that one call — a
+prompt edit, a model swap, or just a one-off odd response. If it's a
+one-off fluke, there's nothing to fix.
+
 **Always available, no dependencies. Enabled by default.**
 
-## The math
+## How this works under the hood
 
 For each of `input_tokens`, `output_tokens`, `cost_micros`, and
 `cached_input_tokens`, the detector computes the modified z-score of

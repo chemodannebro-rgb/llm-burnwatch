@@ -20,12 +20,12 @@ etc.) only read usage/metadata fields off the response object, not its
 content.
 
 The one place raw content *could* end up in the log is the optional
-free-form `extra` object, if you put it there yourself — `log_call()`
-warns (once) if any `extra` field is a string longer than 200 characters,
-since that's a sign you might be logging raw prompt/response content
-rather than a short piece of metadata (e.g. `workflow_id`). This is a
-one-time nudge, not a validation that blocks the call — llm-burnwatch has
-no way to know what's actually in a field you choose to populate.
+free-form `extra` object, if you put it there yourself. `log_call()` warns
+(once) if any `extra` field is a string longer than 200 characters, since
+that's a sign you might be logging raw prompt/response content rather
+than a short piece of metadata (e.g. `workflow_id`) — but it's a one-time
+nudge, not a validation that blocks the call. llm-burnwatch has no way to
+know what's actually in a field you choose to populate.
 
 ## Why didn't my alert fire?
 

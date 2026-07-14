@@ -1,5 +1,10 @@
 # Security model
 
+**Short answer:** nothing leaves your computer except what you explicitly
+turn on — importing a pricing file from a URL, or sending alerts to a
+webhook/Slack/Telegram/local command you configure. Everything else only
+reads and writes files on your own disk.
+
 `llm-burnwatch`'s zero-dependency core reads and writes local files and
 prints to stdout/stderr. None of `report`/`demo-data`/`schema`/`status`/`validate`/
 `dashboard`/`detect`/`train`/`budget` make a network call — enforced by
@@ -49,14 +54,19 @@ code-execution risk.
 ## `detect --follow` state-file trust boundary
 
 `--follow` persists progress (byte offset already consumed, plus the
-current rolling window) to `<log-file>.llm-burnwatch-follow-state.json`,
-written atomically (`tempfile.mkstemp` + `os.replace`) next to the log — a
-process killed mid-write never leaves a half-written state file behind.
+current rolling window, the monotonic poll counter, and alert-cooldown/
+rules-aggregation bookkeeping — see "Alert cooldown" below) to
+`<log-file>.llm-burnwatch-follow-state.json`, written atomically
+(`tempfile.mkstemp` + `os.replace`) next to the log — a process killed
+mid-write never leaves a half-written state file behind.
 
 At load time, the file's top-level shape is validated before its contents
 are trusted; a state file that's missing, unreadable, not valid JSON, or
 the wrong shape is never fatal — `--follow` warns and starts over from the
-beginning of the log rather than crashing.
+beginning of the log rather than crashing. The cooldown/aggregation/poll-
+counter keys specifically default to empty/zero instead of triggering this
+fallback, since a state file written before they existed simply won't have
+them.
 
 **What this does not protect against:** the state file carries no
 integrity check analogous to the model registry's sha256 below. Someone
@@ -67,13 +77,28 @@ itself — if you don't already trust everyone with write access to
 `--log-file`'s directory, the follow-state file carries no stronger
 guarantee.
 
+## `detect --follow` alert cooldown
+
+To keep a single ongoing incident (e.g. a looping agent) from re-hitting
+every configured sink on every poll, `--alert-cooldown-minutes` (default
+15) suppresses re-sending the *same* `(detector, kind, group_key)` alert to
+sinks while it keeps triggering without a gap, with an escalation override
+(sent immediately if the alert's magnitude roughly doubles) so a worsening
+situation is never hidden by the cooldown window. `rules` violations
+(`--max-call-cost`/`--max-trace-cost`/`--allowed-models`, always
+`severity="critical"`) are never suppressed this way — they're aggregated
+into a periodic summary instead, so a real policy/cost violation is never
+silently dropped. This only governs what reaches *sinks*; every alert is
+still printed to stdout on every poll regardless of cooldown. See
+`alert_cooldown.py` for the exact rules.
+
 ## `detect --follow` alert sinks trust boundary
 
 Alert sinks (`WebhookSink`/`SlackSink`/`TelegramSink`/`ExecSink`) push each
-newly triggered alert to a destination *you* configure. None run
-implicitly, none run for one-shot `detect`, and a failure in one sink is
-caught, reported via `warn()`, and never stops the poll loop or the other
-configured sinks.
+alert handed to them (after the cooldown/aggregation filtering above) to a
+destination *you* configure. None run implicitly, none run for one-shot
+`detect`, and a failure in one sink is caught, reported via `warn()`, and
+never stops the poll loop or the other configured sinks.
 
 **Webhook/Slack**: an HTTP(S) POST using the same `urllib.request` +
 10-second-timeout discipline as `pricing import`, including rejecting any

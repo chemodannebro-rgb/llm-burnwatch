@@ -41,6 +41,7 @@ def test_log_call_record_with_optional_fields_matches_schema(tmp_path, schema):
         output_tokens=20,
         cached_input_tokens=10,
         trace_id="req-123",
+        request_id="call-456",
         workflow_id="wf-1",
     )
     jsonschema.validate(record, schema)

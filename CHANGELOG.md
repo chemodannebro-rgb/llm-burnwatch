@@ -225,6 +225,7 @@ switcher, English staying the default (root URL, no prefix).
 - `README.md` and code docstrings stay English-only -- the user asked for
   the docs site specifically.
 
+## [1.0.4] - 2026-07-13
 
 Documentation as a product: an mkdocs-material site replacing "read the
 whole README" with one page per topic, editorial work over already-vetted

@@ -7,6 +7,16 @@ have. Unlike every other detector, this isn't a statistical judgment call;
 it's "this violates a limit you set", so every alert it emits is
 `severity="critical"`.
 
+**Fires when:** a rule *you* configured is broken — a disallowed model
+shows up, a single call costs more than your cap, or a whole multi-step
+run crosses your trace-cost cap. Silent otherwise; there's no statistical
+guesswork involved.
+
+**What to do:** it's already a clear-cut policy violation by your own
+definition — the alert names the exact rule and the record that broke it,
+so there's nothing to diagnose further; just decide whether to fix what
+triggered it or adjust the rule.
+
 **Always available, no dependencies. Enabled by default** — but stays
 completely silent unless you configure at least one rule. There's no safe
 universal default for "which models are allowed" or "how much should a

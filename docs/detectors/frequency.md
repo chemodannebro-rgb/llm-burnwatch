@@ -4,6 +4,14 @@
 anomalously frequent — this is the only detector that looks at *how many*
 calls happened in a time window, rather than what each call cost.
 
+**Fires when:** call volume in a short window is far above what's normal
+for that time — but only once the log has enough calendar history to know
+what's "normal" for that hour/weekday; before that, this detector stays
+off entirely (see below).
+
+**What to do:** check whether something is stuck in a retry/agent loop —
+a process calling itself repeatedly, or a bug causing duplicate requests.
+
 **Always available, no dependencies. Disabled by default** — `detect`
 decides whether to actually run it for a given log, based on whether the
 log has enough calendar span for a seasonal comparison.
@@ -17,7 +25,7 @@ false-positive rate or refuse to ship the detector at all, it ships off by
 default and `detect` only turns it on once the log has enough history for
 a seasonal baseline to make it worthwhile.
 
-## The math
+## How this works under the hood
 
 Calls are bucketed into fixed **60-second** windows
 (`FREQUENCY_WINDOW_SECONDS`) per `(label, model)` group, plus one

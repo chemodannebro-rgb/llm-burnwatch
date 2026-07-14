@@ -157,7 +157,9 @@ class FrequencyDetector:
 
             z = None
             is_spike = False
-            if median is not None:
+            # median/mad are always set (or left None) together as a pair --
+            # see their assignments above -- so this also narrows mad's type.
+            if median is not None and mad is not None:
                 if mad == 0:
                     is_spike = n_calls > median
                 else:
