@@ -43,7 +43,16 @@ from .detectors.frequency_detector import FrequencyDetector
 from .detectors.protocol import Alert
 from .detectors.rules_detector import RulesDetector
 from .logreader import parse_date
-from .tracker import build_report, user_budget_path
+from .tracker import build_report, pricing_age_days, user_budget_path
+
+# 2.3: same threshold as cli.py's `_print_header` -- keep the two nudges in
+# sync (report/status's terminal warning and the dashboard's HTML warning
+# should trigger at the same age).
+_PRICING_STALE_DAYS = 60
+_PRICING_IMPORT_URL = (
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/"
+    "model_prices_and_context_window.json"
+)
 
 _DAY_BAR_WIDTH = 100
 _DAY_BAR_HEIGHT = 14
@@ -617,6 +626,13 @@ def render_dashboard(
         if last_updated
         else ""
     )
+    age_days = pricing_age_days(last_updated) if last_updated else None
+    if age_days is not None and age_days > _PRICING_STALE_DAYS:
+        last_updated_line += (
+            '<p class="pricing-stale">warning: pricing data is '
+            f"{age_days} day(s) old \u2014 costs may be inaccurate. Update with: "
+            f"<code>llm-burnwatch pricing import {html.escape(_PRICING_IMPORT_URL)}</code></p>"
+        )
 
     title = f"llm-burnwatch dashboard \u2014 {period_line[len('Period: '):]}"
 
@@ -743,6 +759,8 @@ tbody tr:last-child td {{ border-bottom: none; }}
 .budget-status.warn {{ color: #d1a52c; }}
 .budget-status.over {{ color: #b5341a; font-weight: 600; }}
 .budget-note {{ color: #888; font-size: 0.9rem; }}
+.pricing-stale {{ color: #92660a; background: #fdf0d5; padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.9rem; }}
+.pricing-stale code {{ background: rgba(0, 0, 0, 0.06); padding: 0.05rem 0.3rem; border-radius: 3px; }}
 @media (prefers-color-scheme: dark) {{
   :root {{
     --accent: #818cf8; --accent-soft: #23253a; --border: #333;
@@ -751,6 +769,8 @@ tbody tr:last-child td {{ border-bottom: none; }}
   .disclaimer {{ background: #2a2410; border-color: #6b5a1e; }}
   .anomaly-badge.flagged, .severity-badge.critical {{ background: #3a1f18; }}
   .severity-badge.warning {{ background: #362c10; }}
+  .pricing-stale {{ background: #362c10; }}
+  .pricing-stale code {{ background: rgba(255, 255, 255, 0.1); }}
 }}
 @media (max-width: 600px) {{
   body {{ padding: 1rem 1rem 2rem; }}

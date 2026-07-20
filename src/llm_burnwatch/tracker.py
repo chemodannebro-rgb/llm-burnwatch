@@ -83,6 +83,23 @@ def resolve_pricing(explicit_path: str | None = None) -> dict:
     return load_default_pricing()
 
 
+def pricing_age_days(last_updated: object, *, now: datetime | None = None) -> int | None:
+    """Return how many days old a pricing.json's `last_updated` field is, or
+    `None` if it's missing/not a `YYYY-MM-DD` date string (`last_updated` is
+    always written this way by `pricing_import.import_pricing()`, but this
+    degrades gracefully rather than raising for a hand-edited or malformed
+    file, same as every other pricing/log field parse in this codebase).
+    """
+    if not isinstance(last_updated, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(last_updated).date()
+    except ValueError:
+        return None
+    now = now or datetime.now(timezone.utc)
+    return (now.date() - parsed).days
+
+
 def merge_pricing_overrides(base: dict, overrides: dict[str, dict]) -> dict:
     """Return a new pricing dict: `base` (e.g. `load_default_pricing()`)
     with each `overrides[model]` rate dict layered on top of `base`'s

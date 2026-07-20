@@ -4,11 +4,12 @@
 
 **A watchdog for what your LLM calls actually cost.**
 
-It logs every call to a plain file on your own disk, learns what "normal"
-looks like for your app, and tells you in plain language when something is
-off — a runaway agent loop, a prompt change that quietly doubled your bill,
-a model swap that shouldn't have happened. Nothing ever leaves your machine
-unless you explicitly turn on an alert (Slack, Telegram, webhook).
+llm-burnwatch logs every call to a plain file on your own disk, learns
+what "normal" looks like for your app, and tells you in plain language
+when something is off — a runaway agent loop, a prompt change that
+quietly doubled your bill, a model swap that shouldn't have happened.
+Nothing ever leaves your machine unless you explicitly turn on an alert
+(Slack, Telegram, or a webhook).
 
 [Русская версия](README.ru.md) · [Full documentation](docs/index.md)
 
@@ -16,29 +17,30 @@ unless you explicitly turn on an alert (Slack, Telegram, webhook).
 
 ## What it does
 
-- **Tracks cost** — every call, with cost, tokens, and your own label
-  (`"summarize"`, `"chat"`, whatever makes sense for your app).
-- **Learns your normal** — no setup, no training data to provide. It watches
-  your log and figures out what a typical call for each part of your app
-  looks like.
-- **Flags what's off, in plain English** — "this call cost 20x more than
-  usual", not a wall of statistics. Every alert says what happened and what
-  to do next.
-- **Can stop a runaway loop** — set a budget for a request and it raises an
-  error the moment it's exceeded, instead of quietly burning money.
-- **Stays on your machine** — one file, zero required dependencies, no
-  account, no server. You can open the log file yourself and read every line.
+- **Tracks cost.** Every call, with cost, tokens, and your own label —
+  `"summarize"`, `"chat"`, whatever makes sense for your app.
+- **Learns your normal.** No setup, no training data to provide. It
+  watches your log and figures out what a typical call looks like for
+  each part of your app.
+- **Flags what's off, in plain language.** "This call cost 20x more
+  than usual" — not a wall of statistics. Every alert says what
+  happened and what to do next.
+- **Can stop a runaway loop.** Set a budget for a single request, and
+  it raises an error the moment it's exceeded, instead of quietly
+  burning money.
+- **Stays on your machine.** One file, zero required dependencies, no
+  account, no server. Open the log yourself and read every line.
 
 ## Is this for you?
 
-**Yes**, if you're shipping an app or agent that calls an LLM and you want
-to know what it costs and get warned when something's wrong — without
-setting up a whole observability platform.
+**Yes**, if you're shipping an app or agent that calls an LLM, and you
+want to know what it costs and get warned when something's wrong —
+without standing up a full observability platform.
 
-**Probably not**, if you need full prompt/response tracing and evals (try
-[Langfuse](https://langfuse.com/)), or a request-routing proxy in front of
-multiple providers (try [LiteLLM](https://www.litellm.ai/)). See
-[docs/comparison.md](docs/comparison.md) for the honest breakdown.
+**Probably not**, if you need full prompt/response tracing and evals —
+try [Langfuse](https://langfuse.com/) — or a request-routing proxy in
+front of multiple providers — try [LiteLLM](https://www.litellm.ai/).
+See [docs/comparison.md](docs/comparison.md) for the honest breakdown.
 
 ## Install
 
@@ -48,7 +50,7 @@ pip install llm-burnwatch
 
 ## Five minutes to your first alert
 
-**1. Log your calls.** Add one line after each LLM call:
+**1. Log your calls.** One line after each LLM call:
 
 ```python
 from llm_burnwatch import CostTracker
@@ -62,8 +64,9 @@ tracker.log_call(
 )
 ```
 
-Already using the OpenAI, Anthropic, Gemini, or LangChain SDK? There's a
-one-line adapter for each — see [docs/connecting.md](docs/connecting.md).
+Already using the OpenAI, Anthropic, Gemini, or LangChain SDK? Run
+`llm-burnwatch init` for a ready-made snippet, or see
+[docs/connecting.md](docs/connecting.md) for every adapter.
 
 **2. Check how it's doing.**
 
@@ -71,8 +74,8 @@ one-line adapter for each — see [docs/connecting.md](docs/connecting.md).
 llm-burnwatch status
 ```
 
-This tells you, in plain words, what's being watched and what's still
-warming up — nothing to configure first.
+Plain words on what's being watched and what's still warming up —
+nothing to configure first.
 
 **3. See what you're spending.**
 
@@ -99,11 +102,9 @@ llm-burnwatch detect --log-file demo.jsonl
 llm-burnwatch dashboard --out dashboard.html
 ```
 
-Opens as a single HTML file — no server, nothing to install.
+One self-contained HTML file — no server, nothing to install.
 
 ## Going further
-
-Once the basics are working, here's where to look:
 
 | I want to... | Read this |
 |---|---|
@@ -114,24 +115,24 @@ Once the basics are working, here's where to look:
 | Import cost data I already have (OpenTelemetry traces) | [docs/connecting.md](docs/connecting.md) |
 | Know exactly what data ever leaves my machine, and when | [docs/security.md](docs/security.md) |
 | See every command and flag | [docs/api.md](docs/api.md) |
-| Compare this to Langfuse / LiteLLM / Helicone | [docs/comparison.md](docs/comparison.md) |
-| Common questions (why didn't an alert fire, etc.) | [docs/faq.md](docs/faq.md) |
+| Compare this to Langfuse, LiteLLM, or Helicone | [docs/comparison.md](docs/comparison.md) |
+| Find an answer to a question not covered here | [docs/faq.md](docs/faq.md) |
 
 ## The guarantee
 
 The core of llm-burnwatch never makes a network call. Everything happens
 on your disk. The only exceptions are things *you* explicitly turn on:
-importing a pricing file from a URL, or sending an alert to a webhook/Slack/
-Telegram/local command in `detect --follow`. Full details, including how
-this is tested, in [docs/security.md](docs/security.md).
+importing a pricing file from a URL, or sending an alert to a webhook,
+Slack, Telegram, or local command in `detect --follow`. Full details,
+including how this is tested, in [docs/security.md](docs/security.md).
 
 ## Contributing
 
 ```bash
 pip install -e ".[anomaly,dev]"
 pytest tests/ -v
+mypy src/llm_burnwatch
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for what a PR needs.
-
-See [CHANGELOG.md](CHANGELOG.md) for version history.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for what a PR needs, and
+[CHANGELOG.md](CHANGELOG.md) for version history.

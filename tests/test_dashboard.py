@@ -61,6 +61,25 @@ def test_render_dashboard_on_demo_log_contains_totals_and_names(tmp_path):
         assert model in result
 
 
+def test_render_dashboard_warns_when_pricing_data_is_stale():
+    pricing = {**load_default_pricing(), "last_updated": "2020-01-01"}
+
+    result = render_dashboard([], pricing)
+
+    assert 'class="pricing-stale"' in result
+    assert "pricing data is" in result
+    assert "llm-burnwatch pricing import" in result
+
+
+def test_render_dashboard_does_not_warn_when_pricing_data_is_fresh():
+    fresh_date = datetime.now(timezone.utc).date().isoformat()
+    pricing = {**load_default_pricing(), "last_updated": fresh_date}
+
+    result = render_dashboard([], pricing)
+
+    assert 'class="pricing-stale"' not in result
+
+
 def test_render_dashboard_on_empty_log_does_not_crash():
     pricing = load_default_pricing()
     result = render_dashboard([], pricing)

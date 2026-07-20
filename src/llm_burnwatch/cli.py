@@ -1,6 +1,7 @@
 """Command-line interface for llm-burnwatch.
 
-Eleven subcommands:
+Twelve subcommands:
+  init            -- detect installed LLM SDK(s) and print a personalized quickstart
   report          -- cost summary read back from a log
   demo-data       -- write a synthetic log with a known number of injected anomalies
   detect          -- baseline (+ optional ML cross-check) anomaly detection over a log
@@ -13,8 +14,9 @@ Eleven subcommands:
   budget set/show -- configure/inspect a monthly USD budget for detect/report
   import otel     -- import an OpenTelemetry GenAI trace export (local file only) into a log
 
-`report`/`demo-data`/`schema`/`status`/`validate`/`dashboard`/`detect`/`train`/`budget`/
-`import otel` never make a network call. `detect` only imports scikit-learn indirectly, via
+`init`/`report`/`demo-data`/`schema`/`status`/`validate`/`dashboard`/`detect`/`train`/`budget`/
+`import otel` never make a network call. `init`'s SDK detection uses `importlib.util.find_spec`,
+which never imports the module itself. `detect` only imports scikit-learn indirectly, via
 `registry.load_model` deserializing (via `skops.io`) an existing model -- if
 none exists yet, `detect` runs baseline-only and never touches scikit-learn
 either. `train` imports `anomaly.train` (which imports scikit-learn at module
@@ -91,6 +93,11 @@ from .detectors.frequency_detector import FrequencyDetector
 from .detectors.protocol import ALERT_SCHEMA_VERSION, Alert
 from .detectors.rules_detector import RulesDetector
 from .follow_state import load_follow_state, save_follow_state, state_path_for
+from .init_command import (
+    SDK_SNIPPETS,
+    compute_init_suggestions,
+    detect_available_sdks,
+)
 from .logreader import (
     check_scale,
     filter_by_period,
@@ -108,6 +115,7 @@ from .sinks.webhook_sink import WebhookSink
 from .tracker import (
     build_report,
     default_log_path,
+    pricing_age_days,
     resolve_pricing,
     user_budget_path,
     user_pricing_path,
@@ -119,12 +127,28 @@ DISCLAIMER = (
     "real ones. Always use your own judgement before acting on its output."
 )
 
+# 2.3: how old (in days) pricing.json's `last_updated` can be before we
+# actively nudge the user to refresh it, rather than just passively printing
+# the date and letting them notice on their own.
+PRICING_STALE_DAYS = 60
+_PRICING_IMPORT_URL = (
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/"
+    "model_prices_and_context_window.json"
+)
+
 
 def _print_header(pricing: dict) -> None:
     print(DISCLAIMER)
     last_updated = pricing.get("last_updated")
     if last_updated:
         print(f"pricing data last updated: {last_updated}")
+        age_days = pricing_age_days(last_updated)
+        if age_days is not None and age_days > PRICING_STALE_DAYS:
+            print(
+                f"  warning: pricing data is {age_days} day(s) old -- costs "
+                "may be inaccurate. Update with:\n"
+                f"  llm-burnwatch pricing import {_PRICING_IMPORT_URL}"
+            )
 
 
 def _print_report_csv(result: dict) -> None:
@@ -196,8 +220,8 @@ def _resolve_fx(args: argparse.Namespace):
         )
     if args.rub_rate is not None:
         warn(
-            '--rub-rate is deprecated and will be removed before v1.0; use '
-            '"--fx-rate <rate> --currency RUB" instead'
+            '--rub-rate is deprecated and will be removed in a future major '
+            'release; use "--fx-rate <rate> --currency RUB" instead'
         )
         return args.rub_rate, "RUB", True
     if args.fx_rate is not None and args.currency is None:
@@ -795,14 +819,32 @@ def cmd_status(args: argparse.Namespace) -> int:
     budget_config = _budget_config()
     detector_lines = _detector_status_lines(records, budget_config)
 
+    # 2.2: `status` used to only ever show the *configured* budget limit
+    # (via `detector_lines`'s "budget" message), never actual spend -- reuse
+    # the same `build_report`/`compute_budget_status` (and, for text output,
+    # `_print_budget_status`) that `report` already uses, so the two
+    # commands can never disagree about the numbers.
+    pricing = resolve_pricing(None)
+    report = build_report(records, pricing)
+    budget_status = (
+        compute_budget_status(
+            records, budget_config["monthly_usd"], budget_config["warn_at_fraction"]
+        )
+        if budget_config is not None
+        else None
+    )
+
     if args.json:
         payload = {
             "call_count": len(records),
+            "total_cost_usd": report["total_cost_usd"],
             "detectors": [
                 {"name": name, "state": state, "message": message}
                 for name, state, message in detector_lines
             ],
         }
+        if budget_status is not None:
+            payload["budget_status"] = budget_status
         print(json.dumps(payload, indent=2))
         return 0
 
@@ -816,9 +858,89 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 0
 
     print(f"analyzed {len(records)} call(s)")
+    print(f"total spend: ${report['total_cost_usd']:.2f}")
     name_width = max(len(name) for name, _state, _message in detector_lines)
     for name, state, message in detector_lines:
         print(f"{name.ljust(name_width)}: {state.upper():<8} {message}")
+    if budget_status is not None:
+        print()
+        _print_budget_status(budget_status)
+    return 0
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """Non-interactive, non-file-writing quickstart: print a connection
+    snippet for every installed LLM SDK `detect_available_sdks` finds, then
+    -- only if an existing log already has enough history --
+    `compute_init_suggestions`'s usage-based `--max-call-cost`/monthly
+    budget numbers, as ready-to-copy commands. Never writes anything to
+    disk itself (unlike `budget set`/`pricing import`), so it opens no new
+    trust boundary -- see SECURITY.md.
+    """
+    if args.log_file is None:
+        args.log_file = str(default_log_path())
+
+    sdks = detect_available_sdks()
+    log_path = Path(args.log_file)
+    log_exists = log_path.exists()
+    records: list[dict] = []
+    if log_exists:
+        records = list(iter_log_records(args.log_file))
+    suggestions = compute_init_suggestions(records) if records else None
+
+    if args.json:
+        payload: dict = {
+            "detected_sdks": sdks,
+            "log_file": str(log_path),
+            "log_exists": log_exists,
+            "call_count": len(records),
+            "suggestions": suggestions,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if sdks:
+        print("Detected LLM SDK(s) in this environment:")
+        for name in sdks:
+            print(f"\n# {name}")
+            print(SDK_SNIPPETS[name])
+    else:
+        print(
+            "No known LLM SDK (openai/anthropic/google-genai/ollama/"
+            "langchain-core) detected in this environment. Log calls "
+            "directly instead:\n"
+        )
+        print("from llm_burnwatch import CostTracker")
+        print(f"tracker = CostTracker({str(log_path)!r})")
+        print(
+            'tracker.log_call(label="chat", model="gpt-4o-mini", '
+            "input_tokens=800, output_tokens=150)"
+        )
+        print("\nSee docs/connecting.md for every adapter's exact snippet.")
+
+    print(f"\nlog file: {log_path}")
+    if not log_exists:
+        print("  does not exist yet -- nothing has been logged to it so far")
+        return 0
+
+    print(f"  {len(records)} call(s) logged so far")
+
+    if suggestions is None:
+        return 0
+
+    print(
+        f"\nBased on the last {suggestions['days_spanned']} day(s) "
+        f"({suggestions['call_count']} calls, "
+        f"models: {', '.join(suggestions['models_seen'])}), you could try:"
+    )
+    print(
+        "  llm-burnwatch detect --max-call-cost "
+        f"{suggestions['suggested_max_call_cost_usd']}"
+    )
+    print(
+        "  llm-burnwatch budget set --monthly "
+        f"{suggestions['suggested_monthly_budget_usd']} --warn-at 0.8"
+    )
     return 0
 
 
@@ -1480,23 +1602,36 @@ def _cmd_validate_alerts(args: argparse.Namespace) -> int:
     return 1 if errors else 0
 
 
+_CLI_DESCRIPTION = (
+    "llm-burnwatch: local, zero-dependency cost tracking and anomaly "
+    "detection for LLM/agent calls.\n\n"
+    "Run `llm-burnwatch init` for a personalized quickstart, or "
+    "`llm-burnwatch status` to see what's configured for an existing log. "
+    "Run `llm-burnwatch <command> --help` for details on any subcommand.\n\n"
+    "Full architecture, network-boundary, and security docs: see "
+    "ARCHITECTURE.md / SECURITY.md in the repository."
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="llm-burnwatch", description=__doc__)
+    parser = argparse.ArgumentParser(prog="llm-burnwatch", description=_CLI_DESCRIPTION)
     parser.add_argument("--version", action="version", version=f"llm-burnwatch {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     report_p = subparsers.add_parser("report", help="Summarize cost from a log file")
-    report_p.add_argument(
+    report_basic = report_p.add_argument_group("Basic")
+    report_advanced = report_p.add_argument_group("Advanced")
+    report_basic.add_argument(
         "--log-file",
         default=None,
         help="Defaults to the same location CostTracker() writes to when its own "
         "log_file argument is omitted ($XDG_DATA_HOME/llm-burnwatch/log.jsonl, or "
         "~/.local/share/llm-burnwatch/log.jsonl)",
     )
-    report_p.add_argument(
+    report_advanced.add_argument(
         "--pricing-file", default=None, help="Override pricing.json with a custom file"
     )
-    report_p.add_argument(
+    report_advanced.add_argument(
         "--rub-rate",
         type=_positive_float,
         default=None,
@@ -1504,7 +1639,7 @@ def build_parser() -> argparse.ArgumentParser:
         "to RUB at this fixed, manually-supplied rate (RUB per USD). No exchange rate is "
         "ever fetched over the network.",
     )
-    report_p.add_argument(
+    report_advanced.add_argument(
         "--fx-rate",
         type=_positive_float,
         default=None,
@@ -1512,30 +1647,30 @@ def build_parser() -> argparse.ArgumentParser:
         "rate (units of --currency per USD). Requires --currency. No exchange rate is ever "
         "fetched over the network.",
     )
-    report_p.add_argument(
+    report_advanced.add_argument(
         "--currency",
         default=None,
         help="Currency code to display alongside --fx-rate (e.g. RUB, EUR). Requires --fx-rate.",
     )
-    report_p.add_argument(
+    report_advanced.add_argument(
         "--since",
         type=_date_arg,
         default=None,
         help="Only include records on or after this UTC calendar date (YYYY-MM-DD, inclusive)",
     )
-    report_p.add_argument(
+    report_advanced.add_argument(
         "--until",
         type=_date_arg,
         default=None,
         help="Only include records on or before this UTC calendar date (YYYY-MM-DD, inclusive)",
     )
-    report_p.add_argument(
+    report_advanced.add_argument(
         "--trace-id",
         default=None,
         help="Only include records with this exact trace_id (e.g. to find the cost of one "
         "specific request across retries/sub-calls)",
     )
-    report_p.add_argument(
+    report_advanced.add_argument(
         "--all-time",
         action="store_true",
         help=(
@@ -1543,10 +1678,10 @@ def build_parser() -> argparse.ArgumentParser:
             f"{_DEFAULT_REPORT_WINDOW_DAYS} days. Cannot be combined with --since/--until."
         ),
     )
-    report_p.add_argument(
+    report_basic.add_argument(
         "--json", action="store_true", help="Print a machine-readable JSON summary"
     )
-    report_p.add_argument(
+    report_basic.add_argument(
         "--format",
         choices=["text", "csv"],
         default="text",
@@ -1559,18 +1694,20 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_p = subparsers.add_parser(
         "dashboard", help="Write a static HTML cost dashboard from a log file"
     )
-    dashboard_p.add_argument(
+    dashboard_basic = dashboard_p.add_argument_group("Basic")
+    dashboard_advanced = dashboard_p.add_argument_group("Advanced")
+    dashboard_basic.add_argument(
         "--log-file",
         default=None,
         help="Defaults to the same location CostTracker() writes to when its own "
         "log_file argument is omitted ($XDG_DATA_HOME/llm-burnwatch/log.jsonl, or "
         "~/.local/share/llm-burnwatch/log.jsonl)",
     )
-    dashboard_p.add_argument("--out", required=True)
-    dashboard_p.add_argument(
+    dashboard_basic.add_argument("--out", required=True)
+    dashboard_advanced.add_argument(
         "--pricing-file", default=None, help="Override pricing.json with a custom file"
     )
-    dashboard_p.add_argument(
+    dashboard_advanced.add_argument(
         "--rub-rate",
         type=_positive_float,
         default=None,
@@ -1578,7 +1715,7 @@ def build_parser() -> argparse.ArgumentParser:
         "to RUB at this fixed, manually-supplied rate (RUB per USD). No exchange rate is "
         "ever fetched over the network.",
     )
-    dashboard_p.add_argument(
+    dashboard_advanced.add_argument(
         "--fx-rate",
         type=_positive_float,
         default=None,
@@ -1586,18 +1723,18 @@ def build_parser() -> argparse.ArgumentParser:
         "rate (units of --currency per USD). Requires --currency. No exchange rate is ever "
         "fetched over the network.",
     )
-    dashboard_p.add_argument(
+    dashboard_advanced.add_argument(
         "--currency",
         default=None,
         help="Currency code to display alongside --fx-rate (e.g. RUB, EUR). Requires --fx-rate.",
     )
-    dashboard_p.add_argument(
+    dashboard_advanced.add_argument(
         "--since",
         type=_date_arg,
         default=None,
         help="Only include records on or after this UTC calendar date (YYYY-MM-DD, inclusive)",
     )
-    dashboard_p.add_argument(
+    dashboard_advanced.add_argument(
         "--until",
         type=_date_arg,
         default=None,
@@ -1613,14 +1750,16 @@ def build_parser() -> argparse.ArgumentParser:
     demo_p.set_defaults(handler=cmd_demo_data)
 
     detect_p = subparsers.add_parser("detect", help="Detect anomalous calls in a log")
-    detect_p.add_argument(
+    detect_basic = detect_p.add_argument_group("Basic")
+    detect_advanced = detect_p.add_argument_group("Advanced")
+    detect_basic.add_argument(
         "--log-file",
         default=None,
         help="Defaults to the same location CostTracker() writes to when its own "
         "log_file argument is omitted ($XDG_DATA_HOME/llm-burnwatch/log.jsonl, or "
         "~/.local/share/llm-burnwatch/log.jsonl)",
     )
-    sensitivity_group = detect_p.add_mutually_exclusive_group()
+    sensitivity_group = detect_basic.add_mutually_exclusive_group()
     sensitivity_group.add_argument(
         "--threshold",
         type=float,
@@ -1642,32 +1781,32 @@ def build_parser() -> argparse.ArgumentParser:
             "Mutually exclusive with --threshold."
         ),
     )
-    detect_p.add_argument("--model-dir", default="models")
-    detect_p.add_argument(
-        "--pricing-file", default=None, help="Override pricing.json with a custom file"
-    )
-    detect_p.add_argument(
+    detect_basic.add_argument(
         "--json", action="store_true", help="Print a machine-readable JSON summary"
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument("--model-dir", default="models")
+    detect_advanced.add_argument(
+        "--pricing-file", default=None, help="Override pricing.json with a custom file"
+    )
+    detect_advanced.add_argument(
         "--allowed-models",
         nargs="+",
         default=None,
         help="Only these models are allowed; any other model triggers a critical rule violation",
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--max-call-cost",
         type=_positive_float,
         default=None,
         help="Maximum cost (USD) for a single call before it's flagged as a rule violation",
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--max-trace-cost",
         type=_positive_float,
         default=None,
         help="Maximum total cost (USD) for a single trace_id before it's flagged as a rule violation",
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--frequency-detector",
         choices=["auto", "on", "off"],
         default="auto",
@@ -1677,7 +1816,7 @@ def build_parser() -> argparse.ArgumentParser:
             "'on'/'off' override that decision explicitly"
         ),
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--cusum-detector",
         choices=["on", "off"],
         default="on",
@@ -1688,7 +1827,7 @@ def build_parser() -> argparse.ArgumentParser:
             "day-of-week false-positive risk that justifies frequency's seasonal gating"
         ),
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--follow",
         action="store_true",
         help=(
@@ -1698,13 +1837,13 @@ def build_parser() -> argparse.ArgumentParser:
             "output format)."
         ),
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--poll-interval",
         type=_positive_float,
         default=5.0,
         help="Seconds between polls in --follow mode (default: 5.0)",
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--alert-cooldown-minutes",
         type=_non_negative_float,
         default=15.0,
@@ -1720,7 +1859,7 @@ def build_parser() -> argparse.ArgumentParser:
             "entirely (default: 15.0)"
         ),
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--webhook-url",
         default=None,
         help=(
@@ -1730,7 +1869,7 @@ def build_parser() -> argparse.ArgumentParser:
             "A sink failure is warned about and never stops --follow or other sinks."
         ),
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--slack-webhook-url",
         default=None,
         help=(
@@ -1739,7 +1878,7 @@ def build_parser() -> argparse.ArgumentParser:
             "if not given."
         ),
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--telegram-bot-token",
         default=None,
         help=(
@@ -1750,7 +1889,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(or LLM_BURNWATCH_TELEGRAM_CHAT_ID) to also be given."
         ),
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--telegram-chat-id",
         default=None,
         help=(
@@ -1760,7 +1899,7 @@ def build_parser() -> argparse.ArgumentParser:
             "be given."
         ),
     )
-    detect_p.add_argument(
+    detect_advanced.add_argument(
         "--exec-sink",
         nargs="+",
         default=None,
@@ -1779,20 +1918,38 @@ def build_parser() -> argparse.ArgumentParser:
     train_p = subparsers.add_parser(
         "train", help="Train an anomaly-detection model (requires scikit-learn)"
     )
-    train_p.add_argument(
+    train_basic = train_p.add_argument_group("Basic")
+    train_advanced = train_p.add_argument_group("Advanced")
+    train_basic.add_argument(
         "--log-file",
         default=None,
         help="Defaults to the same location CostTracker() writes to when its own "
         "log_file argument is omitted ($XDG_DATA_HOME/llm-burnwatch/log.jsonl, or "
         "~/.local/share/llm-burnwatch/log.jsonl)",
     )
-    train_p.add_argument("--model-dir", default="models")
-    train_p.add_argument("--keep-last", type=int, default=KEEP_LAST_DEFAULT)
-    train_p.add_argument("--contamination", type=_contamination_type, default=CONTAMINATION)
+    train_advanced.add_argument("--model-dir", default="models")
+    train_advanced.add_argument("--keep-last", type=int, default=KEEP_LAST_DEFAULT)
+    train_advanced.add_argument("--contamination", type=_contamination_type, default=CONTAMINATION)
     train_p.set_defaults(handler=cmd_train)
 
     schema_p = subparsers.add_parser("schema", help="Print the JSONL log schema")
     schema_p.set_defaults(handler=cmd_schema)
+
+    init_p = subparsers.add_parser(
+        "init",
+        help="Detect installed LLM SDK(s) and print a personalized quickstart",
+    )
+    init_p.add_argument(
+        "--log-file",
+        default=None,
+        help="Defaults to the same location CostTracker() writes to when its own "
+        "log_file argument is omitted ($XDG_DATA_HOME/llm-burnwatch/log.jsonl, or "
+        "~/.local/share/llm-burnwatch/log.jsonl)",
+    )
+    init_p.add_argument(
+        "--json", action="store_true", help="Print a machine-readable JSON summary"
+    )
+    init_p.set_defaults(handler=cmd_init)
 
     status_p = subparsers.add_parser(
         "status",

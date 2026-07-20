@@ -304,6 +304,40 @@ def test_report_command_prints_disclaimer_and_totals(tmp_path, capsys):
     assert "total cost:" in captured.out
 
 
+def test_report_command_warns_when_pricing_data_is_stale(tmp_path, capsys):
+    log_path = _demo_log(tmp_path, n_normal=5, n_anomalies=0)
+    pricing_path = tmp_path / "old-pricing.json"
+    pricing_path.write_text(
+        json.dumps({"last_updated": "2020-01-01", "models": {"gpt-4o": {"input_per_1m": 2.5, "output_per_1m": 10.0}}})
+    )
+
+    exit_code = main(
+        ["report", "--log-file", str(log_path), "--pricing-file", str(pricing_path)]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "warning: pricing data is" in captured.out
+    assert "llm-burnwatch pricing import" in captured.out
+
+
+def test_report_command_does_not_warn_when_pricing_data_is_fresh(tmp_path, capsys):
+    log_path = _demo_log(tmp_path, n_normal=5, n_anomalies=0)
+    pricing_path = tmp_path / "fresh-pricing.json"
+    fresh_date = datetime.now(timezone.utc).date().isoformat()
+    pricing_path.write_text(
+        json.dumps({"last_updated": fresh_date, "models": {"gpt-4o": {"input_per_1m": 2.5, "output_per_1m": 10.0}}})
+    )
+
+    exit_code = main(
+        ["report", "--log-file", str(log_path), "--pricing-file", str(pricing_path)]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "warning: pricing data is" not in captured.out
+
+
 def test_report_command_prints_rub_conversion_when_rate_given(tmp_path, capsys):
     log_path = _demo_log(tmp_path, n_normal=5, n_anomalies=0)
 
@@ -1235,6 +1269,66 @@ def test_status_command_reflects_configured_budget(tmp_path, monkeypatch, capsys
     assert "50.00" in by_name["budget"]["message"]
 
 
+def test_status_command_text_shows_total_spend(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    log_path = _demo_log(tmp_path, n_normal=5, n_anomalies=0)
+
+    exit_code = main(["status", "--log-file", str(log_path)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "total spend: $" in captured.out
+
+
+def test_status_command_json_includes_total_cost_usd(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    log_path = _demo_log(tmp_path, n_normal=5, n_anomalies=0)
+
+    exit_code = main(["status", "--log-file", str(log_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    # existing fields must survive untouched (additive change only)
+    assert payload["call_count"] == 5
+    assert set(d["name"] for d in payload["detectors"]) == {"frequency", "cusum", "budget"}
+    assert isinstance(payload["total_cost_usd"], float)
+    assert payload["total_cost_usd"] > 0
+    assert "budget_status" not in payload
+
+
+def test_status_command_text_shows_budget_status_when_configured(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    log_path = _demo_log(tmp_path, n_normal=5, n_anomalies=0)
+
+    budget_exit = main(["budget", "set", "--monthly", "50", "--warn-at", "0.8"])
+    assert budget_exit == 0
+    capsys.readouterr()
+
+    exit_code = main(["status", "--log-file", str(log_path)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "budget:" in captured.out
+    assert "month-to-date: $" in captured.out
+    assert "monthly budget: $50.00" in captured.out
+
+
+def test_status_command_json_includes_budget_status_when_configured(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    log_path = _demo_log(tmp_path, n_normal=5, n_anomalies=0)
+
+    budget_exit = main(["budget", "set", "--monthly", "50", "--warn-at", "0.8"])
+    assert budget_exit == 0
+    capsys.readouterr()
+
+    exit_code = main(["status", "--log-file", str(log_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["budget_status"]["monthly_usd"] == 50.0
+    assert "month_to_date_usd" in payload["budget_status"]
+
+
 def test_status_command_missing_log_file_returns_exit_code_2(tmp_path, capsys):
     missing = tmp_path / "does-not-exist.jsonl"
     exit_code = main(["status", "--log-file", str(missing)])
@@ -1272,6 +1366,7 @@ def test_status_command_json_on_empty_log_is_unaffected_by_onboarding(tmp_path, 
     assert exit_code == 0
     payload = json.loads(captured.out)
     assert payload["call_count"] == 0
+    assert payload["total_cost_usd"] == 0.0
     assert len(payload["detectors"]) == 3
 
 
@@ -1465,6 +1560,54 @@ def test_unexpected_exception_in_handler_returns_exit_code_2(tmp_path, monkeypat
     assert "[llm-burnwatch] error: unexpected error: boom" in captured.err
 
 
+def test_top_level_help_shows_short_description_not_the_module_docstring(capsys):
+    # 2.1: `--help`'s description is a short, user-facing blurb -- the full
+    # architecture/network-boundary docstring (`cli.__doc__`) stays out of
+    # the first screen a new user sees, though it's still readable via
+    # `ARCHITECTURE.md`/`SECURITY.md` (pointed to from the short blurb) or
+    # the module source itself.
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--help"])
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 0
+    assert "llm-burnwatch: local, zero-dependency cost tracking" in captured.out
+    assert len(captured.out.splitlines()) < 40
+    for technical_phrase in ("skops.io", "scikit-learn", "Exit codes", "IsolationForest"):
+        assert technical_phrase not in captured.out
+
+
+@pytest.mark.parametrize(
+    "command,advanced_flag",
+    [
+        ("report", "--pricing-file"),
+        ("dashboard", "--pricing-file"),
+        ("detect", "--pricing-file"),
+        ("train", "--model-dir"),
+    ],
+)
+def test_subcommand_help_groups_flags_into_basic_and_advanced(capsys, command, advanced_flag):
+    # 2.4: heavily-flagged subcommands split their `--help` into "Basic:"/
+    # "Advanced:" sections (via `add_argument_group`, which doesn't affect
+    # actual parsing -- only `--help`'s layout) so a new user isn't faced
+    # with a wall of equally-weighted flags on first use.
+    with pytest.raises(SystemExit) as exc_info:
+        main([command, "--help"])
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 0
+    assert "Basic:" in captured.out
+    assert "Advanced:" in captured.out
+    # The top usage synopsis lists every flag regardless of grouping, so
+    # only compare the "Basic:"/"Advanced:" section bodies, not the whole
+    # output, to confirm `advanced_flag` is actually under "Advanced:".
+    basic_idx = captured.out.index("Basic:")
+    advanced_idx = captured.out.index("Advanced:")
+    assert basic_idx < advanced_idx
+    assert advanced_flag in captured.out[advanced_idx:]
+    assert advanced_flag not in captured.out[basic_idx:advanced_idx]
+
+
 def test_core_commands_make_no_network_attempts(tmp_path, monkeypatch, capsys):
     # Patching socket.socket itself catches every stdlib-level network path
     # (urllib, requests, http.client all eventually construct socket.socket),
@@ -1500,6 +1643,13 @@ def test_core_commands_make_no_network_attempts(tmp_path, monkeypatch, capsys):
     status_exit = main(["status", "--log-file", str(log_path)])
     captured = capsys.readouterr()
     assert status_exit == 0
+    assert "unexpected error" not in captured.err
+
+    # `init`'s SDK detection uses importlib.util.find_spec, never import --
+    # should never touch the network either.
+    init_exit = main(["init", "--log-file", str(log_path)])
+    captured = capsys.readouterr()
+    assert init_exit == 0
     assert "unexpected error" not in captured.err
 
     # No --model-dir with a trained model: latest_version_dir() returns None,

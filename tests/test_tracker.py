@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import stat
+from datetime import datetime, timezone
 
 import pytest
 
@@ -13,6 +14,7 @@ from llm_burnwatch.tracker import (
     default_log_path,
     load_default_pricing,
     merge_pricing_overrides,
+    pricing_age_days,
 )
 
 
@@ -430,3 +432,14 @@ def test_adapters_forward_request_id_to_log_call(tmp_path, method, response):
         response, label="chat", cost=0.0, request_id="req-1"
     )
     assert record["request_id"] == "req-1"
+
+
+def test_pricing_age_days_computes_calendar_day_difference():
+    now = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    assert pricing_age_days("2026-06-01", now=now) == 43
+    assert pricing_age_days("2026-07-14", now=now) == 0
+
+
+@pytest.mark.parametrize("value", [None, 42, "", "not-a-date", "2026-13-99"])
+def test_pricing_age_days_returns_none_for_missing_or_unparseable_input(value):
+    assert pricing_age_days(value) is None

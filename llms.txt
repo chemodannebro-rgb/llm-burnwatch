@@ -1,0 +1,43 @@
+# llm-burnwatch
+
+> Local, zero-dependency cost tracking and anomaly detection for LLM/agent
+> calls. Logs every call to a plain JSONL file on disk, learns per-app
+> normal usage, and flags anomalies (cost spikes, sustained cost/token
+> drift, call-frequency bursts, rule/budget violations) without any
+> network call in its core. Install: `pip install llm-burnwatch`. Python
+> API: `from llm_burnwatch import CostTracker`. CLI: `llm-burnwatch`.
+
+## Start here
+
+- [README](README.md): what it does, install, five-minute quickstart, when to use it vs. not.
+- [Quickstart](docs/index.md): install, first log call, first report, first detected anomaly, first dashboard.
+- [Connecting to an existing app](docs/connecting.md): one-line adapters for OpenAI, Anthropic, Gemini, Ollama, LangChain, LiteLLM; OpenTelemetry GenAI trace import; JSONL log schema for non-Python clients.
+- [Public API](docs/api.md): full Python API (`CostTracker`, `guard()`, adapters), every CLI command/flag/exit code, every `--json` output key, and what is/isn't covered by semver.
+
+## Core concepts
+
+- [`budget` vs `guard()`](docs/budget-vs-guard.md): post-hoc cross-process monthly budget detection vs. real-time in-process per-trace enforcement — when to use which, and how to combine them.
+- [Security model](docs/security.md): the full trust model — which commands never touch the network, the two opt-in exceptions (`pricing import <url>`, `detect --follow` alert sinks), and what each trust boundary does and doesn't protect against.
+- [Comparison](docs/comparison.md): honest positioning against Langfuse, LiteLLM, and Helicone, and what llm-burnwatch deliberately is not (not a proxy, not a prompt/eval store, not a notification platform).
+- [Performance](docs/performance.md): measured throughput/latency/memory numbers for `report`, `detect`, and `detect --follow` at 1,000,000-record scale.
+- [FAQ](docs/faq.md): why an alert didn't fire, whether prompts/completions are ever stored, multi-process logging, and more.
+
+## Detectors
+
+- [Baseline (z-score)](docs/detectors/baseline.md): flags a single call whose cost/tokens are a statistical outlier relative to its own group's history.
+- [CUSUM (level shift)](docs/detectors/cusum.md): flags a sustained, gradual rise in cost/tokens that no single call would trip on its own.
+- [Frequency (bursts / runaway loops)](docs/detectors/frequency.md): flags an abnormal call rate, seasonally aware (weekday × hour) once enough history exists.
+- [Rules (hard limits)](docs/detectors/rules.md): flags an explicit policy violation you configured — disallowed model, per-call or per-trace cost ceiling.
+- [Budget](docs/detectors/budget.md): flags month-to-date spend on pace to exceed a configured monthly budget.
+
+## Reference
+
+- [CHANGELOG](CHANGELOG.md): full version history, one entry per release, with rationale for every notable change.
+- [CONTRIBUTING](CONTRIBUTING.md): what a pull request needs, including the versioning/deprecation policy.
+- [ARCHITECTURE](ARCHITECTURE.md): internal design notes — network boundaries, extras discipline, detector protocol.
+- [SECURITY.md](SECURITY.md): vulnerability reporting process (canonical source; docs/security.md is the readable version).
+- [Schema](src/llm_burnwatch/schema.json): the JSONL log record contract, also printed by `llm-burnwatch schema`.
+
+## Optional
+
+- [Русская документация](README.ru.md): full documentation mirrored in Russian (`docs/*.ru.md` for every page above).
